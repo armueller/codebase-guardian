@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.db
+.dirty-files
+.validation-cache.json
+.validation-sessions.json
+*.log
+*.log.old

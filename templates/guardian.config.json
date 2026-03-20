@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "_comment": "Optional per-project config. Place at project root as guardian.config.json. All fields are optional — auto-detection is used for anything not specified.",
+  "sourceDirectories": ["src"],
+  "docsDirectories": ["docs"],
+  "excludeDirectories": ["node_modules", "dist", "build", ".next", ".turbo", "coverage"],
+  "fileExtensions": [".ts", ".tsx"],
+  "jsdoc": {
+    "requiredTags": ["what", "how", "why", "sideeffects", "systemlayer", "domain", "tags"],
+    "minTags": 3,
+    "minCommentLength": 5
+  }
+}

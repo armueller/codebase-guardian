@@ -1,0 +1,29 @@
+{
+  "name": "codebase-guardian",
+  "version": "0.1.0",
+  "description": "Semantic code index + automated validation hooks for TypeScript codebases",
+  "type": "module",
+  "main": "dist/mcp-server/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/mcp-server/index.js",
+    "build-index": "node dist/mcp-server/build-index.js",
+    "test": "npx tsx --test tests/**/*.test.ts",
+    "test:mcp": "npx tsx --test tests/db.test.ts tests/indexer.test.ts",
+    "test:hooks": "npx tsx --test tests/code-analyzer.test.ts tests/jsdoc-parser.test.ts tests/claude-headless.test.ts tests/code-index-client.test.ts"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "better-sqlite3": "^11.0.0",
+    "ts-morph": "^27.0.2",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.2"
+  }
+}
