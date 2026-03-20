@@ -4,6 +4,19 @@ Semantic code index + automated validation hooks for TypeScript codebases. Insta
 
 Guardian indexes your codebase's functions, types, documentation, and call graph into a searchable SQLite database backed by FTS5 keyword search and vector embeddings. A PreToolUse hook validates every edit for code quality — DRY enforcement, JSDoc completeness, pattern consistency, and README compliance — using headless Claude with the full semantic index as context.
 
+## Why
+
+Claude Code is exceptionally good at writing code — but it has no memory of what already exists in your codebase. Without enforcement, this leads to predictable problems:
+
+- **Duplicate code everywhere.** Claude writes a new `formatCurrency()` function because it doesn't know you already have one in `utils/formatting.ts`. Multiply this across hundreds of edits and your codebase fills with redundant implementations that diverge over time.
+- **Documentation rot.** Claude modifies a function's behavior but doesn't update the JSDoc. Or it creates new functions with no documentation at all. The codebase becomes progressively harder to understand — for both humans and AI.
+- **Pattern drift.** Your `controllers/` directory follows a specific pattern, documented in its README. Claude doesn't read the README before writing a new controller, so it invents its own approach. Now you have two patterns where you should have one.
+- **Invisible blast radius.** Claude changes a utility function's signature without knowing that 15 other functions depend on it. The change compiles but breaks assumptions downstream.
+
+These aren't hypothetical — they're the actual failure modes observed during months of daily Claude Code usage on a production codebase. Traditional code review catches them, but only after the code is already written and committed. By then, the duplicate has callers, the undocumented function has dependents, and cleaning up is 10x harder than preventing the problem.
+
+Codebase Guardian solves this by **validating every edit at write-time**, before it lands. A semantic index gives the validator full context about what already exists, and headless Claude applies judgment about whether the edit is a legitimate new capability or a quality violation. Bad edits get blocked with specific, actionable feedback — and Claude sees that feedback and fixes the issues automatically.
+
 ## How It Works
 
 ```
