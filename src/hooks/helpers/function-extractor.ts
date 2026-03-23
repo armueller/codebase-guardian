@@ -114,12 +114,13 @@ function findFunctionDeclaration(
   // Escape special regex characters in function name
   const escapedName = functionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-  // Patterns for different function declaration styles
+  // Patterns for different function/class declaration styles
   const patterns = [
     `(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?function\\s+${escapedName}\\s*\\(`,                             // function name( or export default function name(
     `(?:export\\s+)?const\\s+${escapedName}\\s*=\\s*(?:async\\s*)?\\([^)]*\\)\\s*=>`,                           // const name = () => or const name = async () =>
     `(?:export\\s+)?const\\s+${escapedName}\\s*=\\s*(?:async\\s*)?function`,                                    // const name = function
     `(?:export\\s+)?const\\s+${escapedName}\\s*=\\s*(?:createSelector|createAsyncThunk|createSlice)\\(`,        // const name = createSelector|createAsyncThunk|createSlice(
+    `(?:export\\s+)?(?:default\\s+)?(?:abstract\\s+)?class\\s+${escapedName}(?:\\s+extends\\s+\\S+)?\\s*\\{`,   // class name { or class name extends Base {
     `${escapedName}\\s*:\\s*(?:async\\s*)?\\([^)]*\\)\\s*(?:=>|{)`,                                              // name: (params) => or name() {
     `(?:export\\s+)?(?:async\\s+)?${escapedName}\\s*\\(`,                                                        // async name( (method style)
   ];

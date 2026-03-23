@@ -318,6 +318,9 @@ export function extractDeclaredFunctions(code: string): string[] {
     'pending', 'rejected', 'fulfilled', 'settled',     // createAsyncThunk lifecycle
     'reducers', 'extraReducers', 'selectors',           // createSlice/createAppSlice config
     'prepare',                                          // createSlice reducer prepare callback
+    'handler', 'callback', 'listener', 'middleware',    // Common inline callback property names
+    'onSuccess', 'onError', 'onComplete', 'onCancel',  // Event handler callbacks
+    'resolve', 'reject',                                // Promise callbacks
   ]);
 
   return Array.from(declared).filter(name => !inlineCallbackNames.has(name));
