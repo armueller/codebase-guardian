@@ -397,9 +397,9 @@ export function analyzeTypeUsage(
 }
 
 /**
- * @what Finds function names that enclose the edit region in the full file content
- * @how Locates the edit position via oldString match, then walks backward through the file to find the nearest function/const/class declaration that contains that position
- * @why When an edit modifies code inside a function body without changing the declaration, the standard analyzeFunctionUsage misses it entirely — this catches body-only edits so they still get validated for JSDoc accuracy, DRY, and code quality
+ * @what Finds the innermost named scope (function, method, constructor, or class) that encloses the edit region
+ * @how Scans the entire file for all declarations, determines each one's brace range with context-aware matching (handles strings, comments, template literals), then returns the innermost scope containing the edit position
+ * @why When an edit modifies code inside a function body without changing the declaration, analyzeFunctionUsage misses it — this catches body-only edits. Using innermost scope ensures we validate just the affected method, not an entire class.
  *
  * @param {string} fullFileContent The complete file content after the edit is applied
  * @param {string} oldString The original text that was replaced (used to locate the edit region)
@@ -409,51 +409,190 @@ export function analyzeTypeUsage(
  * @sideeffects None
  * @systemlayer Code Analysis
  * @domain function-detection, edit-containment, body-change-detection
- * @tags enclosing-function, body-edit, containment, walkback, validation-trigger
+ * @tags enclosing-function, body-edit, containment, scope-analysis, validation-trigger
  */
 export function findEnclosingFunctions(
   fullFileContent: string,
   oldString: string,
   newString: string
 ): string[] {
-  // Find where the edit landed in the post-edit file content
   const editPos = fullFileContent.indexOf(newString);
   if (editPos === -1) return [];
 
-  // Walk backward from the edit position to find the enclosing function declaration
-  const before = fullFileContent.slice(0, editPos);
-  const lines = before.split('\n');
+  // Find all named scopes in the file with their brace ranges
+  const scopes = findAllNamedScopes(fullFileContent);
 
-  // Scan backward through lines looking for a function declaration
-  const declarationPatterns = [
-    /(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)\s*\(/,
-    /(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s*)?\([^)]*\)\s*(?:=>|{)/,
-    /(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s*)?function/,
-    /(?:export\s+)?(?:default\s+)?class\s+(\w+)/,
+  // Find scopes that contain the edit position
+  const containing = scopes.filter(s => editPos > s.braceStart && editPos < s.braceEnd);
+
+  if (containing.length === 0) return [];
+
+  // Sort by range size ascending — smallest range = innermost scope
+  containing.sort((a, b) => (a.braceEnd - a.braceStart) - (b.braceEnd - b.braceStart));
+
+  // Return the innermost scope
+  return [containing[0].name];
+}
+
+interface NamedScope {
+  name: string;
+  type: 'function' | 'method' | 'class';
+  declStart: number;
+  braceStart: number;
+  braceEnd: number;
+}
+
+/**
+ * @what Finds all named scopes (functions, methods, classes) in a file with their brace ranges
+ * @how Uses regex to find declarations, then context-aware brace matching to determine each scope's range
+ * @why Needed by findEnclosingFunctions to determine which scope contains the edit position
+ *
+ * @param {string} content The full file content
+ * @returns {NamedScope[]} All named scopes with their brace ranges
+ *
+ * @sideeffects None
+ * @systemlayer Code Analysis
+ * @domain scope-detection, brace-matching
+ * @tags scope-analysis, brace-matching, declarations, context-aware, parsing
+ */
+function findAllNamedScopes(content: string): NamedScope[] {
+  const scopes: NamedScope[] = [];
+
+  // Declaration patterns — each captures the name in group 1
+  const patterns: Array<{ regex: RegExp; type: 'function' | 'method' | 'class' }> = [
+    // Standalone functions: function name( or export async function name(
+    { regex: /(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)\s*\(/g, type: 'function' },
+    // Arrow/function-expression assignments: const name = (...) => { or const name = function
+    { regex: /(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?(?:\([^)]*\)\s*=>|\bfunction\b)/g, type: 'function' },
+    // Class declarations: class Name or export default class Name
+    { regex: /(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+(\w+)/g, type: 'class' },
+    // Class methods with access modifiers: private/protected/public [async] name(
+    { regex: /(?:private|protected|public)\s+(?:static\s+)?(?:async\s+)?(\w+)\s*\(/g, type: 'method' },
+    // Constructor
+    { regex: /\b(constructor)\s*\(/g, type: 'method' },
   ];
 
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    for (const pattern of declarationPatterns) {
-      const match = line.match(pattern);
-      if (match && match[1]) {
-        // Verify this declaration actually encloses the edit by checking brace depth
-        const declarationPos = before.lastIndexOf(lines[i]);
-        const textBetween = fullFileContent.slice(declarationPos, editPos);
+  for (const { regex, type } of patterns) {
+    let match;
+    while ((match = regex.exec(content)) !== null) {
+      const name = match[1];
+      const declStart = match.index;
 
-        // Count unmatched opening braces — if depth > 0, the edit is inside this function
-        let depth = 0;
-        for (const char of textBetween) {
-          if (char === '{') depth++;
-          else if (char === '}') depth--;
-        }
+      // Find the opening brace for this declaration
+      // Start from declStart (not after match) so we properly track paren depth
+      // through the parameter list — the regex match may include the opening (
+      const braceStart = findNextOpenBrace(content, declStart);
+      if (braceStart === -1) continue;
 
-        if (depth > 0) {
-          return [match[1]];
-        }
-      }
+      // Find the matching closing brace using context-aware matching
+      const braceEnd = findMatchingCloseBrace(content, braceStart);
+      if (braceEnd === -1) continue;
+
+      scopes.push({ name, type, declStart, braceStart, braceEnd });
     }
   }
 
-  return [];
+  return scopes;
+}
+
+/**
+ * @what Finds the next opening brace after a position, skipping parenthesized parameter lists
+ * @how Scans forward, tracking paren depth to skip over parameter lists, then finds the first {
+ * @why Declarations like `function foo(a, b)` or `private method(x: {complex: Type})` have parens before the brace
+ *
+ * @param {string} content The file content
+ * @param {number} startPos Position to start scanning from (after the declaration keyword)
+ * @returns {number} Index of the opening brace, or -1 if not found within 2000 chars
+ *
+ * @sideeffects None
+ * @systemlayer Utility
+ * @domain brace-finding, parameter-skipping
+ * @tags brace-search, paren-tracking, forward-scan, parsing
+ */
+function findNextOpenBrace(content: string, startPos: number): number {
+  let parenDepth = 0;
+  const limit = Math.min(content.length, startPos + 2000);
+
+  for (let i = startPos; i < limit; i++) {
+    const ch = content[i];
+    if (ch === '(') parenDepth++;
+    else if (ch === ')') parenDepth--;
+    else if (ch === '{' && parenDepth === 0) return i;
+    // Arrow function without braces — give up
+    else if (ch === ';' && parenDepth === 0) return -1;
+  }
+  return -1;
+}
+
+/**
+ * @what Finds the matching closing brace for an opening brace, with context-aware scanning
+ * @how Tracks brace depth while skipping braces inside strings, template literals, line comments, and block comments
+ * @why Naive brace counting fails on code containing string literals with braces, template expressions, or commented-out code
+ *
+ * @param {string} content The file content
+ * @param {number} openBracePos Index of the opening brace
+ * @returns {number} Index of the matching closing brace, or -1 if not found
+ *
+ * @sideeffects None
+ * @systemlayer Utility
+ * @domain brace-matching, context-aware-parsing
+ * @tags brace-matching, string-aware, comment-aware, template-aware, robust-parsing
+ */
+function findMatchingCloseBrace(content: string, openBracePos: number): number {
+  let depth = 1;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inTemplateLiteral = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+
+  for (let i = openBracePos + 1; i < content.length; i++) {
+    const ch = content[i];
+    const prev = i > 0 ? content[i - 1] : '';
+
+    // Line comment end
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+
+    // Block comment end
+    if (inBlockComment) {
+      if (ch === '/' && prev === '*') inBlockComment = false;
+      continue;
+    }
+
+    // String ends (check for escaped quotes)
+    if (inSingleQuote) {
+      if (ch === '\'' && prev !== '\\') inSingleQuote = false;
+      continue;
+    }
+    if (inDoubleQuote) {
+      if (ch === '"' && prev !== '\\') inDoubleQuote = false;
+      continue;
+    }
+    if (inTemplateLiteral) {
+      if (ch === '`' && prev !== '\\') inTemplateLiteral = false;
+      continue;
+    }
+
+    // Detect context entry points
+    if (ch === '/' && i + 1 < content.length) {
+      const next = content[i + 1];
+      if (next === '/') { inLineComment = true; i++; continue; }
+      if (next === '*') { inBlockComment = true; i++; continue; }
+    }
+    if (ch === '\'') { inSingleQuote = true; continue; }
+    if (ch === '"') { inDoubleQuote = true; continue; }
+    if (ch === '`') { inTemplateLiteral = true; continue; }
+
+    // Count braces in code context only
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+
+  return -1;
 }
