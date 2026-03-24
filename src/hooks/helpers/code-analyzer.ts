@@ -430,8 +430,30 @@ export function findEnclosingFunctions(
   // Sort by range size ascending — smallest range = innermost scope
   containing.sort((a, b) => (a.braceEnd - a.braceStart) - (b.braceEnd - b.braceStart));
 
-  // Return the innermost scope
-  return [containing[0].name];
+  const innermost = containing[0];
+
+  // If the innermost scope is a function/method/constructor, return it directly
+  if (innermost.type !== 'class') return [innermost.name];
+
+  // The edit is at class level (between method bodies) — likely editing JSDoc or
+  // the declaration area of a nearby method. Find the next method/function declaration
+  // that starts AFTER the edit position and validate that instead of the whole class.
+  const nextScope = scopes
+    .filter(s => s.type !== 'class' && s.declStart >= editPos)
+    .sort((a, b) => a.declStart - b.declStart)[0];
+
+  if (nextScope) return [nextScope.name];
+
+  // If no method after the edit, check if a method ends just before the edit
+  // (edit might be after the last method, e.g., adding a new method at class end)
+  const prevScope = scopes
+    .filter(s => s.type !== 'class' && s.braceEnd < editPos)
+    .sort((a, b) => b.braceEnd - a.braceEnd)[0];
+
+  if (prevScope) return [prevScope.name];
+
+  // Truly class-level with no nearby methods — return the class
+  return [innermost.name];
 }
 
 interface NamedScope {

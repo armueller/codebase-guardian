@@ -121,6 +121,7 @@ function findFunctionDeclaration(
     `(?:export\\s+)?const\\s+${escapedName}\\s*=\\s*(?:async\\s*)?function`,                                    // const name = function
     `(?:export\\s+)?const\\s+${escapedName}\\s*=\\s*(?:createSelector|createAsyncThunk|createSlice)\\(`,        // const name = createSelector|createAsyncThunk|createSlice(
     `(?:export\\s+)?(?:default\\s+)?(?:abstract\\s+)?class\\s+${escapedName}(?:\\s+extends\\s+\\S+)?\\s*\\{`,   // class name { or class name extends Base {
+    `(?:private|protected|public)\\s+(?:static\\s+)?(?:async\\s+)?${escapedName}\\s*\\(`,                        // class method: private name( or public async name(
     `${escapedName}\\s*:\\s*(?:async\\s*)?\\([^)]*\\)\\s*(?:=>|{)`,                                              // name: (params) => or name() {
     `(?:export\\s+)?(?:async\\s+)?${escapedName}\\s*\\(`,                                                        // async name( (method style)
   ];
