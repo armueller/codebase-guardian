@@ -233,4 +233,159 @@ describe('findEnclosingFunctions', () => {
     const result = findEnclosingFunctions(postEdit, oldCode, newCode);
     assert.deepEqual(result, []);
   });
+
+  // ─── Class and method scope tests ──────────────────────────────────────────
+
+  it('finds specific method inside a class, not the class itself', () => {
+    const file = [
+      'class MyService {',
+      '  constructor() {',
+      '    this.init();',
+      '  }',
+      '  private processData(input: string) {',
+      '    const result = input.trim();',
+      '    return result;',
+      '  }',
+      '}',
+    ].join('\n');
+    const oldCode = 'const result = input.trim();';
+    const newCode = 'const result = input.trim().toLowerCase();';
+    const postEdit = file.replace(oldCode, newCode);
+    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
+    assert.deepEqual(result, ['processData']);
+  });
+
+  it('finds constructor when edit is inside constructor body', () => {
+    const file = [
+      'export class AppStack extends cdk.Stack {',
+      '  constructor(scope: any, id: string) {',
+      '    super(scope, id);',
+      '    const bucket = new s3.Bucket(this, "MyBucket");',
+      '  }',
+      '  private createResources() {',
+      '    return {};',
+      '  }',
+      '}',
+    ].join('\n');
+    const oldCode = 'const bucket = new s3.Bucket(this, "MyBucket");';
+    const newCode = 'const bucket = new s3.Bucket(this, "NewBucket");';
+    const postEdit = file.replace(oldCode, newCode);
+    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
+    assert.deepEqual(result, ['constructor']);
+  });
+
+  it('finds method with multi-line parameter list', () => {
+    const file = [
+      'class Service {',
+      '  private createQueues(',
+      '    appName: string,',
+      '    config: QueueConfig,',
+      '    vpc?: ec2.Vpc',
+      '  ) {',
+      '    const queue = new sqs.Queue(this, "Q");',
+      '    return { queue };',
+      '  }',
+      '}',
+    ].join('\n');
+    const oldCode = 'const queue = new sqs.Queue(this, "Q");';
+    const newCode = 'const queue = new sqs.Queue(this, "MyQ");';
+    const postEdit = file.replace(oldCode, newCode);
+    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
+    assert.deepEqual(result, ['createQueues']);
+  });
+
+  it('finds method with return type annotation', () => {
+    const file = [
+      'class Calc {',
+      '  public compute(x: number): number {',
+      '    return x * 2;',
+      '  }',
+      '}',
+    ].join('\n');
+    const oldCode = 'return x * 2;';
+    const newCode = 'return x * 3;';
+    const postEdit = file.replace(oldCode, newCode);
+    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
+    assert.deepEqual(result, ['compute']);
+  });
+
+  it('handles braces inside string literals without false scope ending', () => {
+    const file = [
+      'function render() {',
+      '  const template = "{ not a scope }";',
+      '  const result = process(template);',
+      '  return result;',
+      '}',
+    ].join('\n');
+    const oldCode = 'const result = process(template);';
+    const newCode = 'const result = transform(template);';
+    const postEdit = file.replace(oldCode, newCode);
+    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
+    assert.deepEqual(result, ['render']);
+  });
+
+  it('handles braces inside comments without false scope ending', () => {
+    const file = [
+      'function process() {',
+      '  // closing } brace in comment',
+      '  const x = 1;',
+      '  return x;',
+      '}',
+    ].join('\n');
+    const oldCode = 'const x = 1;';
+    const newCode = 'const x = 2;';
+    const postEdit = file.replace(oldCode, newCode);
+    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
+    assert.deepEqual(result, ['process']);
+  });
+
+  it('finds innermost scope in nested functions', () => {
+    const file = [
+      'function outer() {',
+      '  function inner() {',
+      '    const x = 1;',
+      '    return x;',
+      '  }',
+      '  return inner();',
+      '}',
+    ].join('\n');
+    const oldCode = 'const x = 1;';
+    const newCode = 'const x = 42;';
+    const postEdit = file.replace(oldCode, newCode);
+    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
+    assert.deepEqual(result, ['inner']);
+  });
+
+  it('returns class when edit is in class body but not inside any method', () => {
+    const file = [
+      'class MyClass {',
+      '  private value = 10;',
+      '  getName() { return "test"; }',
+      '}',
+    ].join('\n');
+    const oldCode = 'private value = 10;';
+    const newCode = 'private value = 20;';
+    const postEdit = file.replace(oldCode, newCode);
+    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
+    assert.deepEqual(result, ['MyClass']);
+  });
+
+  it('handles multiple classes in one file correctly', () => {
+    const file = [
+      'class First {',
+      '  run() { return 1; }',
+      '}',
+      'class Second {',
+      '  private execute() {',
+      '    const val = compute();',
+      '    return val;',
+      '  }',
+      '}',
+    ].join('\n');
+    const oldCode = 'const val = compute();';
+    const newCode = 'const val = compute(42);';
+    const postEdit = file.replace(oldCode, newCode);
+    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
+    assert.deepEqual(result, ['execute']);
+  });
 });
