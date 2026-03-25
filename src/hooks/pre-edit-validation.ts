@@ -174,17 +174,27 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
   log(`[TIMING] Analyze type usage: ${Date.now() - t2b}ms`);
   log(`Types - Modified: ${typeUsage.modified.length}, Created: ${typeUsage.created.length}`);
 
+  // Detect new file creation (Write to non-existent file)
+  const isNewFile = input.tool_name === 'Write' && !existsSync(filePath);
+
   // If no functions or types modified/created, check if the edit falls inside a function body
   if (usage.modified.length === 0 && usage.created.length === 0 &&
       typeUsage.modified.length === 0 && typeUsage.created.length === 0) {
-    // Detect body-only edits by finding the enclosing function
-    const enclosing = findEnclosingFunctions(fullFileContent, oldString, newString);
-    if (enclosing.length > 0) {
-      log(`Body-only edit detected inside: ${enclosing.join(', ')} — treating as modified`);
-      usage.modified.push(...enclosing);
+    if (isNewFile) {
+      // New file creation — always validate the full file content.
+      // Regex-based extraction can't catch every framework pattern (wrapped functions,
+      // HOCs, middleware wrappers, etc.), but headless Claude can evaluate any code.
+      log('New file creation detected — validating full file');
     } else {
-      log('No functions or types modified/created and no enclosing function found — skipping validation');
-      return { action: 'allow', message: 'No function or type declarations changed — no validation needed' };
+      // Existing file edit — detect body-only edits by finding the enclosing function
+      const enclosing = findEnclosingFunctions(fullFileContent, oldString, newString);
+      if (enclosing.length > 0) {
+        log(`Body-only edit detected inside: ${enclosing.join(', ')} — treating as modified`);
+        usage.modified.push(...enclosing);
+      } else {
+        log('No functions or types modified/created and no enclosing function found — skipping validation');
+        return { action: 'allow', message: 'No function or type declarations changed — no validation needed' };
+      }
     }
   }
 
@@ -358,7 +368,9 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
       propertyAccesses,
       patternContext,
       jsdocViolations,
-      typeJsdocViolations
+      typeJsdocViolations,
+      isNewFile,
+      fullFileContent: isNewFile ? fullFileContent : undefined,
     });
     log(`[TIMING] Build first-attempt prompt: ${Date.now() - t8}ms (${prompt.length} chars)`);
   }

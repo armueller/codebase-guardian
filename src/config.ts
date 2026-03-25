@@ -246,10 +246,18 @@ const configCache = new Map<string, GuardianConfig>();
  *   If omitted, uses GUARDIAN_PROJECT_ROOT or git root or cwd.
  */
 export function resolveConfig(fromPath?: string): GuardianConfig {
-  // Detect project root
-  const projectRoot = fromPath && fs.existsSync(fromPath) && fs.statSync(fromPath).isFile()
-    ? detectProjectRootFromFile(fromPath)
-    : detectProjectRoot(fromPath);
+  // Detect project root.
+  // Use detectProjectRootFromFile when the path looks like a file (has an extension).
+  // The file itself doesn't need to exist — the function walks up parent directories
+  // looking for .git/. This handles new files being created by Write operations.
+  let projectRoot: string;
+  if (fromPath && path.extname(fromPath) !== '') {
+    projectRoot = detectProjectRootFromFile(fromPath);
+  } else if (fromPath && fs.existsSync(fromPath) && fs.statSync(fromPath).isFile()) {
+    projectRoot = detectProjectRootFromFile(fromPath);
+  } else {
+    projectRoot = detectProjectRoot(fromPath);
+  }
 
   // Return cached config if available for this project root
   const cached = configCache.get(projectRoot);

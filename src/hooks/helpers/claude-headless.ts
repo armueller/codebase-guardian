@@ -214,6 +214,18 @@ Rules for the suggestions array (soft recommendations — do NOT cause "deny"):
 - When in doubt about JSDoc: err on the side of denying (documentation is critical)
 - When in doubt about patterns: err on the side of allowing (patterns evolve)
 
+## New File Validation
+
+When the prompt indicates a NEW FILE is being created, you will receive the full file content. New files are held to the SAME standards as edits — if not higher, because this is the first chance to get it right:
+
+- **Every exported function, constant, or handler** must have complete JSDoc — even if it's wrapped in a middleware function, HOC, or factory pattern. The JSDoc goes on the exported const or function declaration, not the inner implementation.
+- **Framework conventions**: API routes, loaders, actions, handlers — whatever the framework pattern is, the exported entry point needs JSDoc describing what the endpoint does, its parameters, return value, and side effects.
+- **DRY**: Check similar existing functions from the code index. If this new file duplicates logic that already exists, flag it.
+- **Pattern consistency**: Check sibling functions and directory patterns. The new file should follow established conventions in its directory.
+- **All the same rules apply**: JSDoc completeness, accuracy, inline comment quality, pattern consistency, README compliance.
+
+Do NOT give new files a pass just because they're new. Apply the same rigor as any edit.
+
 ## Session Continuity
 
 You may be resumed with \`--resume\` to validate a revised edit after a previous denial. When this happens:
@@ -553,6 +565,8 @@ export function buildFirstAttemptPrompt(context: {
   patternContext: PatternContext;
   jsdocViolations: Map<string, string[]>;
   typeJsdocViolations: Map<string, string[]>;
+  isNewFile?: boolean;
+  fullFileContent?: string;
 }): string {
   const { filePath, extractedFunctions, extractedTypes, propertyAccesses, patternContext, jsdocViolations, typeJsdocViolations } = context;
 
@@ -697,8 +711,13 @@ ${type.fullCode}
     ? propertyAccesses.map(p => `- ${p.object}.${p.property}`).join('\n')
     : '(none detected)';
 
-  return `FILE: ${filePath}
+  // ── New file section ──
+  const newFileSection = context.isNewFile && context.fullFileContent
+    ? `\n== NEW FILE — FULL CONTENT ==\n\nThis is a NEW FILE being created. Validate the ENTIRE file for code quality:\n- All exported functions/constants MUST have complete JSDoc\n- Code must follow directory patterns and project conventions\n- Check for DRY violations against similar existing functions\n- Wrapped/decorated functions (HOCs, middleware wrappers, factory patterns) still require JSDoc on the exported constant\n\n\`\`\`typescript\n${context.fullFileContent}\n\`\`\`\n`
+    : '';
 
+  return `FILE: ${filePath}${context.isNewFile ? ' (NEW FILE)' : ''}
+${newFileSection}
 == FUNCTIONS BEING EDITED ==
 
 ${functionsSection}
