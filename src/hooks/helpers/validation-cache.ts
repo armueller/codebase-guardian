@@ -75,7 +75,7 @@ export function getCachedValidation(cacheKey: string): ValidationResult | null {
  * @domain cache-write, persistence
  * @tags cache-write, persistence, performance, optimization, storage
  */
-export function setCachedValidation(cacheKey: string, result: ValidationResult): void {
+export function setCachedValidation(cacheKey: string, result: ValidationResult, filePath?: string): void {
   try {
     // Read existing cache (or create empty object)
     let cacheData: Record<string, CacheEntry> = {};
@@ -92,7 +92,8 @@ export function setCachedValidation(cacheKey: string, result: ValidationResult):
     // Add new entry
     cacheData[cacheKey] = {
       result,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      filePath
     };
 
     // Clean up expired entries to keep cache file size reasonable
@@ -181,6 +182,42 @@ export function clearCache(): void {
     }
   } catch (_error) {
     // Ignore errors (non-fatal)
+  }
+}
+
+/**
+ * @what Clears all cached validation results for a specific file
+ * @how Reads cache file, removes entries matching the given file path, writes back
+ * @why When an edit is allowed, prior cached denials for that file may be stale
+ *
+ * @param {string} targetFilePath Absolute path of the file to invalidate
+ *
+ * @sideeffects Reads and writes cache file to disk
+ * @systemlayer Cache Invalidation
+ * @domain cache-invalidation, staleness-prevention
+ * @tags cache-clear, file-invalidation, staleness, correctness
+ */
+export function clearCacheForFile(targetFilePath: string): void {
+  try {
+    if (!existsSync(CACHE_FILE)) {
+      return;
+    }
+
+    const cacheData: Record<string, CacheEntry> = JSON.parse(readFileSync(CACHE_FILE, 'utf-8'));
+    let removed = 0;
+
+    for (const [key, entry] of Object.entries(cacheData)) {
+      if (entry.filePath === targetFilePath) {
+        delete cacheData[key];
+        removed++;
+      }
+    }
+
+    if (removed > 0) {
+      writeFileSync(CACHE_FILE, JSON.stringify(cacheData, null, 2), 'utf-8');
+    }
+  } catch (_error) {
+    // Non-fatal — if we can't clear, stale entries will expire via TTL
   }
 }
 

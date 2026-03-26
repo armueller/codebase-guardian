@@ -82,6 +82,7 @@ export interface ValidationResult {
 export interface CacheEntry {
   result: ValidationResult;
   timestamp: number;       // Unix timestamp when cached
+  filePath?: string;       // File path for targeted cache invalidation
 }
 
 /**

@@ -218,7 +218,7 @@ Rules for the suggestions array (soft recommendations — do NOT cause "deny"):
 
 When the prompt indicates a NEW FILE is being created, you will receive the full file content. New files are held to the SAME standards as edits — if not higher, because this is the first chance to get it right:
 
-- **Every exported function, constant, or handler** must have complete JSDoc — even if it's wrapped in a middleware function, HOC, or factory pattern. The JSDoc goes on the exported const or function declaration, not the inner implementation.
+- **Every exported function or handler** must have complete JSDoc — even if it's wrapped in a middleware function, HOC, or factory pattern. The JSDoc goes on the exported const or function declaration, not the inner implementation. Non-function constants (e.g., React contexts via createContext, configuration objects, string constants) do NOT require JSDoc.
 - **Framework conventions**: API routes, loaders, actions, handlers — whatever the framework pattern is, the exported entry point needs JSDoc describing what the endpoint does, its parameters, return value, and side effects.
 - **DRY**: Check similar existing functions from the code index. If this new file duplicates logic that already exists, flag it.
 - **Pattern consistency**: Check sibling functions and directory patterns. The new file should follow established conventions in its directory.
@@ -498,9 +498,13 @@ export function parseClaudeOutput(rawOutput: string): {
       throw new Error('Invalid validation response format from Claude');
     }
 
+    // Normalize decision — headless Claude sometimes returns "approve" or "pass" instead of "allow"
+    const rawDecision = String(validation.decision).toLowerCase();
+    const normalizedDecision: 'allow' | 'deny' = (rawDecision === 'allow' || rawDecision === 'approve' || rawDecision === 'pass') ? 'allow' : 'deny';
+
     return {
       response: {
-        decision: validation.decision as 'allow' | 'deny',
+        decision: normalizedDecision,
         violations: validation.violations,
         suggestions: Array.isArray(validation.suggestions) ? validation.suggestions : [],
         reasoning: validation.reasoning || 'No reasoning provided'
@@ -713,7 +717,7 @@ ${type.fullCode}
 
   // ── New file section ──
   const newFileSection = context.isNewFile && context.fullFileContent
-    ? `\n== NEW FILE — FULL CONTENT ==\n\nThis is a NEW FILE being created. Validate the ENTIRE file for code quality:\n- All exported functions/constants MUST have complete JSDoc\n- Code must follow directory patterns and project conventions\n- Check for DRY violations against similar existing functions\n- Wrapped/decorated functions (HOCs, middleware wrappers, factory patterns) still require JSDoc on the exported constant\n\n\`\`\`typescript\n${context.fullFileContent}\n\`\`\`\n`
+    ? `\n== NEW FILE — FULL CONTENT ==\n\nThis is a NEW FILE being created. Validate the ENTIRE file for code quality:\n- All exported functions MUST have complete JSDoc (non-function constants like React contexts, config objects do NOT require JSDoc)\n- Code must follow directory patterns and project conventions\n- Check for DRY violations against similar existing functions\n- Wrapped/decorated functions (HOCs, middleware wrappers, factory patterns) still require JSDoc on the exported declaration\n\n\`\`\`typescript\n${context.fullFileContent}\n\`\`\`\n`
     : '';
 
   return `FILE: ${filePath}${context.isNewFile ? ' (NEW FILE)' : ''}

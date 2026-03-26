@@ -38,7 +38,8 @@ import {
 import {
   getCachedValidation,
   setCachedValidation,
-  generateCacheKey
+  generateCacheKey,
+  clearCacheForFile
 } from './helpers/validation-cache.js';
 import { getSession, setDenialInfo, clearSession as clearSessionEntry } from './helpers/validation-sessions.js';
 import crypto from 'crypto';
@@ -142,13 +143,14 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
 
   const t1 = Date.now();
   let fullFileContent = '';
+  let currentFileOnDisk = '';
   if (filePath && existsSync(filePath)) {
     try {
-      const currentContent = readFileSync(filePath, 'utf-8');
+      currentFileOnDisk = readFileSync(filePath, 'utf-8');
       if (oldString) {
         fullFileContent = replaceAll
-          ? currentContent.split(oldString).join(newString)
-          : currentContent.replace(oldString, newString);
+          ? currentFileOnDisk.split(oldString).join(newString)
+          : currentFileOnDisk.replace(oldString, newString);
       } else {
         fullFileContent = newString;
       }
@@ -193,6 +195,7 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
         usage.modified.push(...enclosing);
       } else {
         log('No functions or types modified/created and no enclosing function found — skipping validation');
+        clearCacheForFile(filePath);
         return { action: 'allow', message: 'No function or type declarations changed — no validation needed' };
       }
     }
@@ -303,11 +306,13 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
   const sessionKey = `${sessionId}:${filePath}`;
   let existingSession = getSession(sessionKey);
 
-  // If the file has been modified since the last denial (e.g., by another edit that added JSDoc),
+  // If the file on disk has been modified since the last denial (e.g., by another edit that was allowed),
   // the resumed session would have stale context. Clear it and force a fresh first-attempt.
+  // We compare the actual file on disk — not the proposed edit — because denied edits don't land,
+  // so different retry attempts should still resume the same session.
   if (existingSession && existingSession.lastDeniedContentHash) {
-    const currentFileHash = crypto.createHash('sha256').update(fullFileContent).digest('hex').slice(0, 16);
-    if (currentFileHash !== existingSession.lastDeniedContentHash) {
+    const onDiskHash = crypto.createHash('sha256').update(currentFileOnDisk).digest('hex').slice(0, 16);
+    if (onDiskHash !== existingSession.lastDeniedContentHash) {
       log(`[SESSION] File content changed since last denial — clearing stale session for fresh validation`);
       clearSessionEntry(sessionKey);
       existingSession = null;
@@ -318,9 +323,10 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
   log(`[SESSION] ${isRetry ? `Retry attempt #${existingSession!.attemptCount + 1} (session: ${existingSession!.headlessSessionId})` : 'First attempt'}`);
 
   // Check for identical resubmission on retry — return cached denial without invoking headless Claude
-  if (isRetry && existingSession!.lastDeniedContentHash) {
-    const currentFileHash = crypto.createHash('sha256').update(fullFileContent).digest('hex').slice(0, 16);
-    if (currentFileHash === existingSession!.lastDeniedContentHash) {
+  // Compares proposed content hash (what the edit would produce) against last denied proposed hash
+  if (isRetry && existingSession!.lastDeniedProposedHash) {
+    const proposedHash = crypto.createHash('sha256').update(fullFileContent).digest('hex').slice(0, 16);
+    if (proposedHash === existingSession!.lastDeniedProposedHash) {
       log(`[SESSION] Identical resubmission detected — returning cached denial (saved ~10s headless call)`);
       return {
         action: 'deny',
@@ -394,8 +400,14 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
     log(`Suggestions: ${JSON.stringify(validationResult.suggestions)}`);
     log(`[TIMING] TOTAL VALIDATION TIME: ${Date.now() - startTime}ms`);
 
+    // When an edit is allowed, clear all prior cached results for this file
+    // so stale denials don't persist after the file state has changed
+    if (validationResult.decision === 'allow') {
+      clearCacheForFile(filePath);
+    }
+
     // Cache the result
-    setCachedValidation(cacheKey, validationResult);
+    setCachedValidation(cacheKey, validationResult, filePath);
 
     // Log non-blocking suggestions to the project's suggestion file
     if (validationResult.suggestions && validationResult.suggestions.length > 0) {
@@ -415,10 +427,12 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
     }
 
     // Store denial info for duplicate resubmission and stale-session detection
-    // Uses fullFileContent hash so we can detect when other edits changed the file between retries
+    // onDiskHash: detects when a different allowed edit changed the file (session staleness)
+    // proposedHash: detects when the exact same edit is resubmitted (identical resubmission)
     if (validationResult.decision !== 'allow') {
-      const fileHash = crypto.createHash('sha256').update(fullFileContent).digest('hex').slice(0, 16);
-      setDenialInfo(sessionKey, fileHash, validationResult.reasoning);
+      const onDiskHash = crypto.createHash('sha256').update(currentFileOnDisk).digest('hex').slice(0, 16);
+      const proposedHash = crypto.createHash('sha256').update(fullFileContent).digest('hex').slice(0, 16);
+      setDenialInfo(sessionKey, onDiskHash, validationResult.reasoning, proposedHash);
     }
 
     return {
@@ -433,10 +447,12 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
 
     if (errorMsg.includes('timed out')) {
       log(`Validation timed out — allowing edit (fail-open)`);
+      clearCacheForFile(filePath);
       return { action: 'allow', message: 'Validation timed out (allowing edit)' };
     }
 
     log(`Validation error: ${errorMsg}`);
+    clearCacheForFile(filePath);
     return { action: 'allow', message: `Validation error (allowing edit): ${errorMsg}` };
   }
 }

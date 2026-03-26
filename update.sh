@@ -65,7 +65,8 @@ ok "Source files updated"
 
 info "Installing dependencies..."
 cd "$GUARDIAN_HOME/source"
-npm install 2>&1 | tail -1
+npm install --ignore-scripts 2>&1 | tail -1
+npm rebuild better-sqlite3 2>&1 | tail -1
 ok "Dependencies installed"
 
 info "Building TypeScript..."

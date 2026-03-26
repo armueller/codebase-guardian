@@ -29,6 +29,7 @@ interface SessionEntry {
   lastAttempt: string;
   createdAt: string;
   lastDeniedContentHash?: string;
+  lastDeniedProposedHash?: string;
   lastDeniedReason?: string;
 }
 
@@ -151,10 +152,11 @@ export function setSession(sessionKey: string, headlessSessionId: string, attemp
  * @domain session-management, denial-tracking
  * @tags denial-cache, duplicate-detection, content-hash, optimization
  */
-export function setDenialInfo(sessionKey: string, contentHash: string, reason: string): void {
+export function setDenialInfo(sessionKey: string, contentHash: string, reason: string, proposedHash?: string): void {
   const store = readStore();
   if (store[sessionKey]) {
     store[sessionKey].lastDeniedContentHash = contentHash;
+    store[sessionKey].lastDeniedProposedHash = proposedHash;
     store[sessionKey].lastDeniedReason = reason;
     writeStore(store);
   }
