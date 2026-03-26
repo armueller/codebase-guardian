@@ -68,6 +68,16 @@ async function main() {
 
     const hookInput: HookInput = JSON.parse(input);
 
+    // Log the full edit details so we can debug what the hook is actually validating
+    const ti = hookInput.tool_input;
+    log(`File: ${ti.file_path || '(none)'}`);
+    if (ti.old_string !== undefined) {
+      log(`old_string (${ti.old_string.length} chars):\n${ti.old_string}`);
+      log(`new_string (${ti.new_string?.length ?? 0} chars):\n${ti.new_string ?? ''}`);
+    } else if (ti.content !== undefined) {
+      log(`Write content (${ti.content.length} chars) — first 500:\n${ti.content.substring(0, 500)}`);
+    }
+
     // Only validate Edit/Write operations
     if (!['Edit', 'Write'].includes(hookInput.tool_name)) {
       allowAndExit('Not an Edit/Write operation');

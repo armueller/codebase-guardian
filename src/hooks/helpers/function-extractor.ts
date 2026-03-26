@@ -243,7 +243,35 @@ function discoverFunctions(sourceFile: SourceFile, content: string): Map<string,
       });
     }
 
-    // 4. Object property assignments with function values: { name: function() {} } or { name: () => {} }
+    // 4. Named function expressions anywhere: useMemo(function computeSelectionBounds() { ... })
+    //    These have a name on the FunctionExpression itself, regardless of where they appear
+    if (node.getKind() === SyntaxKind.FunctionExpression) {
+      const funcExpr = node.asKindOrThrow(SyntaxKind.FunctionExpression);
+      const name = funcExpr.getName();
+      if (!name) return;
+
+      // Skip if already captured by case 2 (const name = function name() {})
+      // — check if the parent chain is a VariableDeclaration with the same name
+      const parent = funcExpr.getParent();
+      if (parent?.getKind() === SyntaxKind.VariableDeclaration) {
+        const parentName = (parent as any).getName?.();
+        if (parentName === name) return;
+      }
+
+      const nodeStart = funcExpr.getStart();
+      const jsdocText = findJSDocBefore(content, nodeStart);
+      const fullStart = jsdocText ? content.lastIndexOf(jsdocText, nodeStart) : nodeStart;
+
+      addResult(name, {
+        name,
+        fullStart,
+        fullEnd: funcExpr.getEnd(),
+        lineNumber: getLineNumber(nodeStart),
+        jsdocText,
+      });
+    }
+
+    // 5. Object property assignments with function values: { name: function() {} } or { name: () => {} }
     if (node.getKind() === SyntaxKind.PropertyAssignment) {
       const propAssign = node.asKindOrThrow(SyntaxKind.PropertyAssignment);
       const name = propAssign.getName();
