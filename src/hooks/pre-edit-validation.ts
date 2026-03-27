@@ -14,14 +14,10 @@
 import { readFileSync, existsSync, appendFileSync, mkdirSync, statSync, renameSync } from 'fs';
 import path from 'path';
 import { HookInput, HookResponse, ExtractedFunction, ExtractedType } from './helpers/types.js';
-import { extractFunctionWithJSDoc, extractTypeWithJSDoc } from './helpers/function-extractor.js';
+import { extractFunctionWithJSDoc, extractTypeWithJSDoc, getSyntaxErrors } from './helpers/function-extractor.js';
 import {
-  extractCalledFunctions,
   extractPropertyAccesses,
-  analyzeFunctionUsage,
-  analyzeTypeUsage,
-  extractDeclaredTypes,
-  findEnclosingFunctions
+  analyzeChanges
 } from './helpers/code-analyzer.js';
 import { validateJSDocCompleteness, validateTypeJSDocCompleteness } from './helpers/jsdoc-parser.js';
 import {
@@ -172,42 +168,45 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
   }
   log(`[TIMING] Read file: ${Date.now() - t1}ms (${fullFileContent.length} chars)`);
 
-  // ── Step 2: Analyze function usage ──
+  // ── Step 1b: Check for syntax errors in post-edit file ──
+  // If the edit creates invalid syntax (e.g., partial function deletion), allow it
+  // rather than flagging issues on broken intermediate code
+  const syntaxErrors = getSyntaxErrors(fullFileContent);
+  if (syntaxErrors.length > 0) {
+    log(`[SYNTAX] Post-edit file has ${syntaxErrors.length} syntax error(s) — allowing edit (intermediate state)`);
+    for (const err of syntaxErrors) {
+      log(`  ${err}`);
+    }
+    clearCacheForFile(filePath);
+    return { action: 'allow', message: `Edit creates intermediate syntax — allowing (${syntaxErrors.length} syntax error(s) detected)` };
+  }
+
+  // ── Step 2: Analyze changes (AST-based comparison of pre-edit vs post-edit file) ──
 
   const t2 = Date.now();
-  const usage = analyzeFunctionUsage(oldString, newString);
-  log(`[TIMING] Analyze usage: ${Date.now() - t2}ms`);
-  log(`Functions - Called: ${usage.called.length}, Modified: ${usage.modified.length}, Created: ${usage.created.length}`);
-
-  // ── Step 2b: Analyze type/interface/enum usage ──
-
-  const t2b = Date.now();
-  const typeUsage = analyzeTypeUsage(oldString, newString);
-  log(`[TIMING] Analyze type usage: ${Date.now() - t2b}ms`);
+  const { functionUsage: usage, typeUsage, typeKindMap } = analyzeChanges(currentFileOnDisk, fullFileContent, newString);
+  log(`[TIMING] Analyze changes: ${Date.now() - t2}ms`);
+  log(`Functions - Called: ${usage.called.length}, Modified: ${usage.modified.length}, Created: ${usage.created.length}, Deleted: ${usage.deleted.length}, Renamed: ${usage.renamed.length}`);
   log(`Types - Modified: ${typeUsage.modified.length}, Created: ${typeUsage.created.length}`);
+  if (usage.deleted.length > 0) {
+    log(`Deleted: ${usage.deleted.join(', ')}`);
+  }
+  if (usage.renamed.length > 0) {
+    log(`Renames: ${usage.renamed.map(r => `${r.oldName} → ${r.newName}`).join(', ')}`);
+  }
 
   // Detect new file creation (Write to non-existent file)
   const isNewFile = input.tool_name === 'Write' && !existsSync(filePath);
 
-  // If no functions or types modified/created, check if the edit falls inside a function body
+  // If no functions or types modified/created, skip validation
   if (usage.modified.length === 0 && usage.created.length === 0 &&
       typeUsage.modified.length === 0 && typeUsage.created.length === 0) {
     if (isNewFile) {
-      // New file creation — always validate the full file content.
-      // Regex-based extraction can't catch every framework pattern (wrapped functions,
-      // HOCs, middleware wrappers, etc.), but headless Claude can evaluate any code.
       log('New file creation detected — validating full file');
     } else {
-      // Existing file edit — detect body-only edits by finding the enclosing function
-      const enclosing = findEnclosingFunctions(fullFileContent, oldString, newString);
-      if (enclosing.length > 0) {
-        log(`Body-only edit detected inside: ${enclosing.join(', ')} — treating as modified`);
-        usage.modified.push(...enclosing);
-      } else {
-        log('No functions or types modified/created and no enclosing function found — skipping validation');
-        clearCacheForFile(filePath);
-        return { action: 'allow', message: 'No function or type declarations changed — no validation needed' };
-      }
+      log('No functions or types modified/created — skipping validation');
+      clearCacheForFile(filePath);
+      return { action: 'allow', message: 'No function or type declarations changed — no validation needed' };
     }
   }
 
@@ -233,10 +232,6 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
   const typesToValidate = [...typeUsage.modified, ...typeUsage.created];
   const extractedTypes: ExtractedType[] = [];
 
-  // Get the declared types from newString to know their kind
-  const declaredTypes = extractDeclaredTypes(newString);
-  const typeKindMap = new Map(declaredTypes.map(t => [t.name, t.kind]));
-
   for (const typeName of typesToValidate) {
     const kind = typeKindMap.get(typeName);
     if (kind) {
@@ -256,6 +251,10 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
   const jsdocViolations = new Map<string, string[]>();
 
   for (const func of extractedFunctions) {
+    // Skip JSDoc validation for inline callbacks (.map, useMemo, etc.) — they're tracked
+    // for change detection but don't require full JSDoc documentation
+    if (!func.requiresJSDoc) continue;
+
     if (!func.hasJSDoc) {
       jsdocViolations.set(func.name, [`Function '${func.name}' is missing JSDoc entirely`]);
     } else if (func.jsdocTags) {
@@ -307,7 +306,7 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
   // ── Step 6: Extract called functions and property accesses ──
 
   const t6 = Date.now();
-  const calledFunctions = extractCalledFunctions(newString);
+  const calledFunctions = usage.called;
   const propertyAccesses = extractPropertyAccesses(newString);
   log(`[TIMING] Extract calls/properties: ${Date.now() - t6}ms (${calledFunctions.length} calls, ${propertyAccesses.length} properties)`);
 
@@ -365,9 +364,11 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
     // First attempt: gather full code index context
     const t7 = Date.now();
     const editComments = extractInlineComments(newString);
+    // Include old names from renames in the modified list for blast radius (caller lookup)
+    const modifiedForContext = [...usage.modified, ...usage.renamed.map(r => r.oldName)];
     const patternContext = buildPatternContext(
       filePath,
-      usage.modified,
+      modifiedForContext,
       usage.created,
       calledFunctions,
       editComments
@@ -387,6 +388,7 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
       typeJsdocViolations,
       isNewFile,
       fullFileContent: isNewFile ? fullFileContent : undefined,
+      deletedFunctions: usage.deleted.length > 0 ? usage.deleted : undefined,
     });
     log(`[TIMING] Build first-attempt prompt: ${Date.now() - t8}ms (${prompt.length} chars)`);
   }

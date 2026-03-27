@@ -22,6 +22,7 @@ export interface ExtractedFunction {
   isModified: boolean;     // Function existed before and is being modified
   lineInFile: number;      // Line number where function starts in full file
   jsdocTags?: JSDocTags;   // Parsed JSDoc tags (only if hasJSDoc is true)
+  requiresJSDoc: boolean;  // true for declarations, false for inline callbacks (.map, useMemo, etc.)
 }
 
 /**
@@ -139,6 +140,8 @@ export interface FunctionUsageAnalysis {
   called: string[];        // Functions called in the new code
   modified: string[];      // Functions that existed and were changed
   created: string[];       // Functions that are new in this edit
+  deleted: string[];       // Functions that existed before but are removed by this edit
+  renamed: Array<{ oldName: string; newName: string }>;  // Functions that were renamed (old name deleted, new name created at similar position)
 }
 
 /**

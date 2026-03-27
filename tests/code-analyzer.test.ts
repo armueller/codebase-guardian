@@ -3,12 +3,9 @@ import assert from 'node:assert/strict';
 import {
   extractCalledFunctions,
   extractPropertyAccesses,
-  analyzeFunctionUsage,
-  analyzeTypeUsage,
-  extractDeclaredFunctions,
-  extractDeclaredTypes,
-  findEnclosingFunctions
+  analyzeChanges
 } from '../src/hooks/helpers/code-analyzer.js';
+import { discoverAllDeclarations } from '../src/hooks/helpers/function-extractor.js';
 
 describe('extractCalledFunctions', () => {
   it('extracts simple function calls', () => {
@@ -45,121 +42,6 @@ describe('extractCalledFunctions', () => {
   });
 });
 
-describe('extractDeclaredFunctions', () => {
-  it('finds function declarations', () => {
-    const result = extractDeclaredFunctions('export function calculateProfit(x: number) { return x; }');
-    assert.ok(result.includes('calculateProfit'));
-  });
-
-  it('finds const arrow functions', () => {
-    const result = extractDeclaredFunctions('export const formatPrice = (price: number) => `$${price}`;');
-    assert.ok(result.includes('formatPrice'));
-  });
-
-  it('finds async function declarations', () => {
-    const result = extractDeclaredFunctions('export async function fetchData() {}');
-    assert.ok(result.includes('fetchData'));
-  });
-
-  it('finds const async arrow functions', () => {
-    const result = extractDeclaredFunctions('const loadStuff = async (id: string) => {}');
-    assert.ok(result.includes('loadStuff'));
-  });
-
-  it('filters out Redux Toolkit lifecycle methods', () => {
-    const result = extractDeclaredFunctions(`
-      pending: (state) => { state.loading = true; },
-      fulfilled: (state, action) => { state.data = action.payload; },
-      rejected: (state) => { state.error = true; },
-    `);
-    assert.ok(!result.includes('pending'));
-    assert.ok(!result.includes('fulfilled'));
-    assert.ok(!result.includes('rejected'));
-  });
-
-  it('returns empty for code with no declarations', () => {
-    const result = extractDeclaredFunctions('const x = 1;\nconst y = "hello";');
-    assert.equal(result.length, 0);
-  });
-});
-
-describe('extractDeclaredTypes', () => {
-  it('finds interface declarations', () => {
-    const result = extractDeclaredTypes('export interface StockData { price: number; }');
-    assert.ok(result.some(t => t.name === 'StockData' && t.kind === 'interface'));
-  });
-
-  it('finds type alias declarations', () => {
-    const result = extractDeclaredTypes('export type TickerType = "stocks" | "options";');
-    assert.ok(result.some(t => t.name === 'TickerType' && t.kind === 'type'));
-  });
-
-  it('finds enum declarations', () => {
-    const result = extractDeclaredTypes('export enum OrderStatus { OPEN, CLOSED }');
-    assert.ok(result.some(t => t.name === 'OrderStatus' && t.kind === 'enum'));
-  });
-
-  it('handles interfaces with extends', () => {
-    const result = extractDeclaredTypes('interface FundamentalData extends BaseData { revenue: number; }');
-    assert.ok(result.some(t => t.name === 'FundamentalData'));
-  });
-
-  it('handles generic type aliases', () => {
-    const result = extractDeclaredTypes('type Response<T> = { data: T; error?: string; }');
-    assert.ok(result.some(t => t.name === 'Response'));
-  });
-});
-
-describe('analyzeFunctionUsage', () => {
-  it('identifies created functions (new, not in old)', () => {
-    const old = '';
-    const new_ = 'export function newFunc() { return 1; }';
-    const result = analyzeFunctionUsage(old, new_);
-    assert.ok(result.created.includes('newFunc'));
-    assert.equal(result.modified.length, 0);
-  });
-
-  it('identifies modified functions (exist in both old and new)', () => {
-    const old = 'function existingFunc() { return 1; }';
-    const new_ = 'function existingFunc() { return 2; }';
-    const result = analyzeFunctionUsage(old, new_);
-    assert.ok(result.modified.includes('existingFunc'));
-    assert.equal(result.created.length, 0);
-  });
-
-  it('identifies called functions in new code', () => {
-    const old = '';
-    const new_ = 'const x = calculateProfit(100);';
-    const result = analyzeFunctionUsage(old, new_);
-    assert.ok(result.called.includes('calculateProfit'));
-  });
-
-  it('handles mix of created, modified, and called', () => {
-    const old = 'function existing() { return 1; }';
-    const new_ = 'function existing() { return helper(); }\nfunction brand_new() {}';
-    const result = analyzeFunctionUsage(old, new_);
-    assert.ok(result.modified.includes('existing'));
-    assert.ok(result.created.includes('brand_new'));
-    assert.ok(result.called.includes('helper'));
-  });
-});
-
-describe('analyzeTypeUsage', () => {
-  it('identifies created types', () => {
-    const result = analyzeTypeUsage('', 'interface NewType { x: number; }');
-    assert.ok(result.created.includes('NewType'));
-  });
-
-  it('identifies modified types', () => {
-    const result = analyzeTypeUsage(
-      'interface ExistingType { x: number; }',
-      'interface ExistingType { x: number; y: string; }'
-    );
-    assert.ok(result.modified.includes('ExistingType'));
-    assert.equal(result.created.length, 0);
-  });
-});
-
 describe('extractPropertyAccesses', () => {
   it('extracts object.property accesses', () => {
     const result = extractPropertyAccesses('const x = order.quantity;');
@@ -183,209 +65,197 @@ describe('extractPropertyAccesses', () => {
   });
 });
 
-describe('findEnclosingFunctions', () => {
-  it('finds the enclosing function for a body-only edit', () => {
-    const file = `export function calculateProfit(revenue: number, cost: number) {\n  const margin = revenue - cost;\n  return margin;\n}\n`;
-    const oldCode = 'const margin = revenue - cost;';
-    const newCode = 'const margin = revenue - cost - fees;';
-    const postEdit = file.replace(oldCode, newCode);
-    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
-    assert.deepEqual(result, ['calculateProfit']);
+describe('analyzeChanges', () => {
+  it('detects created functions in a new file', () => {
+    const postEdit = 'export function newFunc() { return 1; }';
+    const result = analyzeChanges('', postEdit, postEdit);
+    assert.ok(result.functionUsage.created.includes('newFunc'));
+    assert.equal(result.functionUsage.modified.length, 0);
   });
 
-  it('finds enclosing const arrow function', () => {
-    const file = 'export const formatPrice = (price: number) => {\n  return price * 100;\n};\n';
-    const oldCode = 'return price * 100;';
-    const newCode = 'return price * 200;';
-    const postEdit = file.replace(oldCode, newCode);
-    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
-    assert.deepEqual(result, ['formatPrice']);
+  it('detects modified functions when body changes', () => {
+    const preEdit = 'function existingFunc() { return 1; }';
+    const postEdit = 'function existingFunc() { return 2; }';
+    const result = analyzeChanges(preEdit, postEdit, 'return 2;');
+    assert.ok(result.functionUsage.modified.includes('existingFunc'));
+    assert.equal(result.functionUsage.created.length, 0);
   });
 
-  it('returns empty when edit is not inside any function', () => {
-    const file = `const x = 1;\nconst y = 2;\n`;
-    const oldCode = 'const x = 1;';
-    const newCode = 'const x = 42;';
-    const postEdit = file.replace(oldCode, newCode);
-    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
-    assert.deepEqual(result, []);
+  it('detects body-only edits inside functions automatically', () => {
+    const preEdit = 'export function calculateProfit(revenue: number, cost: number) {\n  const margin = revenue - cost;\n  return margin;\n}\n';
+    const postEdit = preEdit.replace('revenue - cost', 'revenue - cost - fees');
+    const result = analyzeChanges(preEdit, postEdit, 'revenue - cost - fees');
+    assert.ok(result.functionUsage.modified.includes('calculateProfit'));
   });
 
-  it('returns empty when newString not found in file', () => {
-    const result = findEnclosingFunctions('some file content', 'old', 'not present');
-    assert.deepEqual(result, []);
+  it('detects called functions from newString', () => {
+    const result = analyzeChanges('', 'const x = calculateProfit(100);', 'const x = calculateProfit(100);');
+    assert.ok(result.functionUsage.called.includes('calculateProfit'));
   });
 
-  it('finds enclosing async function', () => {
-    const file = `export async function fetchData(url: string) {\n  const response = await fetch(url);\n  return response.json();\n}\n`;
-    const oldCode = 'return response.json();';
-    const newCode = 'return response.text();';
-    const postEdit = file.replace(oldCode, newCode);
-    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
-    assert.deepEqual(result, ['fetchData']);
+  it('does NOT detect type property signatures as functions', () => {
+    const preEdit = 'type Props = {\n  onRemoveSpecificInstance: (instanceNodeId: string) => void;\n};';
+    const postEdit = 'type Props = {\n  onRemoveSpecificInstance: (instanceNodeId: string) => void;\n  projectName?: string | null;\n};';
+    const result = analyzeChanges(preEdit, postEdit, 'projectName');
+    assert.ok(!result.functionUsage.modified.includes('onRemoveSpecificInstance'));
+    assert.ok(!result.functionUsage.created.includes('onRemoveSpecificInstance'));
   });
 
-  it('does not match a function that has already closed before the edit', () => {
-    const file = `function first() {\n  return 1;\n}\n\nconst x = 42;\n`;
-    const oldCode = 'const x = 42;';
-    const newCode = 'const x = 99;';
-    const postEdit = file.replace(oldCode, newCode);
-    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
-    assert.deepEqual(result, []);
+  it('detects useMemo(function name() {}) pattern', () => {
+    const preEdit = 'const { bounds } = useMemo(\n  function computeBounds() {\n    return { x: 0 };\n  },\n  [deps]\n);';
+    const postEdit = 'const { bounds } = useMemo(\n  function computeBounds() {\n    return { x: 1 };\n  },\n  [deps]\n);';
+    const result = analyzeChanges(preEdit, postEdit, 'return { x: 1 };');
+    assert.ok(result.functionUsage.modified.includes('computeBounds'));
   });
 
-  // ─── Class and method scope tests ──────────────────────────────────────────
-
-  it('finds specific method inside a class, not the class itself', () => {
-    const file = [
-      'class MyService {',
-      '  constructor() {',
-      '    this.init();',
-      '  }',
-      '  private processData(input: string) {',
-      '    const result = input.trim();',
-      '    return result;',
-      '  }',
-      '}',
-    ].join('\n');
-    const oldCode = 'const result = input.trim();';
-    const newCode = 'const result = input.trim().toLowerCase();';
-    const postEdit = file.replace(oldCode, newCode);
-    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
-    assert.deepEqual(result, ['processData']);
+  it('detects renamed functions via position proximity', () => {
+    const preEdit = 'function oldName() {\n  return 1;\n}';
+    const postEdit = 'function newName() {\n  return 1;\n}';
+    const result = analyzeChanges(preEdit, postEdit, 'function newName');
+    assert.ok(result.functionUsage.renamed.some(r => r.oldName === 'oldName' && r.newName === 'newName'));
+    // Renamed functions should be in modified, not created
+    assert.ok(result.functionUsage.modified.includes('newName'));
+    assert.ok(!result.functionUsage.created.includes('newName'));
   });
 
-  it('finds constructor when edit is inside constructor body', () => {
-    const file = [
-      'export class AppStack extends cdk.Stack {',
-      '  constructor(scope: any, id: string) {',
-      '    super(scope, id);',
-      '    const bucket = new s3.Bucket(this, "MyBucket");',
-      '  }',
-      '  private createResources() {',
-      '    return {};',
-      '  }',
-      '}',
-    ].join('\n');
-    const oldCode = 'const bucket = new s3.Bucket(this, "MyBucket");';
-    const newCode = 'const bucket = new s3.Bucket(this, "NewBucket");';
-    const postEdit = file.replace(oldCode, newCode);
-    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
-    assert.deepEqual(result, ['constructor']);
+  it('detects created types', () => {
+    const result = analyzeChanges('', 'interface NewType { x: number; }', 'interface NewType');
+    assert.ok(result.typeUsage.created.includes('NewType'));
   });
 
-  it('finds method with multi-line parameter list', () => {
-    const file = [
-      'class Service {',
-      '  private createQueues(',
-      '    appName: string,',
-      '    config: QueueConfig,',
-      '    vpc?: ec2.Vpc',
-      '  ) {',
-      '    const queue = new sqs.Queue(this, "Q");',
-      '    return { queue };',
-      '  }',
-      '}',
-    ].join('\n');
-    const oldCode = 'const queue = new sqs.Queue(this, "Q");';
-    const newCode = 'const queue = new sqs.Queue(this, "MyQ");';
-    const postEdit = file.replace(oldCode, newCode);
-    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
-    assert.deepEqual(result, ['createQueues']);
+  it('detects modified types', () => {
+    const preEdit = 'interface ExistingType { x: number; }';
+    const postEdit = 'interface ExistingType { x: number; y: string; }';
+    const result = analyzeChanges(preEdit, postEdit, 'y: string');
+    assert.ok(result.typeUsage.modified.includes('ExistingType'));
+    assert.equal(result.typeUsage.created.length, 0);
   });
 
-  it('finds method with return type annotation', () => {
-    const file = [
-      'class Calc {',
-      '  public compute(x: number): number {',
-      '    return x * 2;',
-      '  }',
-      '}',
-    ].join('\n');
-    const oldCode = 'return x * 2;';
-    const newCode = 'return x * 3;';
-    const postEdit = file.replace(oldCode, newCode);
-    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
-    assert.deepEqual(result, ['compute']);
+  it('provides type kind map', () => {
+    const postEdit = 'interface Foo { x: number; }\ntype Bar = string;\nenum Baz { A, B }';
+    const result = analyzeChanges('', postEdit, postEdit);
+    assert.equal(result.typeKindMap.get('Foo'), 'interface');
+    assert.equal(result.typeKindMap.get('Bar'), 'type');
+    assert.equal(result.typeKindMap.get('Baz'), 'enum');
   });
 
-  it('handles braces inside string literals without false scope ending', () => {
-    const file = [
-      'function render() {',
-      '  const template = "{ not a scope }";',
-      '  const result = process(template);',
-      '  return result;',
-      '}',
-    ].join('\n');
-    const oldCode = 'const result = process(template);';
-    const newCode = 'const result = transform(template);';
-    const postEdit = file.replace(oldCode, newCode);
-    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
-    assert.deepEqual(result, ['render']);
+  it('handles const arrow functions', () => {
+    const preEdit = 'export const formatPrice = (price: number) => `$${price}`;';
+    const postEdit = 'export const formatPrice = (price: number) => `$${price.toFixed(2)}`;';
+    const result = analyzeChanges(preEdit, postEdit, 'price.toFixed(2)');
+    assert.ok(result.functionUsage.modified.includes('formatPrice'));
   });
 
-  it('handles braces inside comments without false scope ending', () => {
-    const file = [
-      'function process() {',
-      '  // closing } brace in comment',
-      '  const x = 1;',
-      '  return x;',
-      '}',
-    ].join('\n');
-    const oldCode = 'const x = 1;';
-    const newCode = 'const x = 2;';
-    const postEdit = file.replace(oldCode, newCode);
-    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
-    assert.deepEqual(result, ['process']);
+  it('handles const function expressions', () => {
+    const postEdit = 'export const handler = function handler(req: any) { return req; }';
+    const result = analyzeChanges('', postEdit, postEdit);
+    assert.ok(
+      result.functionUsage.created.includes('handler'),
+      `Expected 'handler' in created, got: ${JSON.stringify(result.functionUsage.created)}`
+    );
   });
 
-  it('finds innermost scope in nested functions', () => {
-    const file = [
-      'function outer() {',
-      '  function inner() {',
-      '    const x = 1;',
-      '    return x;',
-      '  }',
-      '  return inner();',
-      '}',
-    ].join('\n');
-    const oldCode = 'const x = 1;';
-    const newCode = 'const x = 42;';
-    const postEdit = file.replace(oldCode, newCode);
-    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
-    assert.deepEqual(result, ['inner']);
+  it('does NOT detect useMemo const as a function (it returns a value, not a function)', () => {
+    const code = `
+export function MyComponent() {
+  const bounds = useMemo(
+    function computeBounds() { return { x: 0 }; },
+    [deps]
+  );
+  return null;
+}`;
+    const result = analyzeChanges('', code, code);
+    assert.ok(!result.functionUsage.created.includes('bounds'),
+      `'bounds' should not be detected as a function — useMemo returns a value`);
+    // But the inner named function expression SHOULD be detected
+    assert.ok(result.functionUsage.created.includes('computeBounds'),
+      `'computeBounds' should be detected as a named function expression`);
   });
 
-  it('returns class when edit is in class body but not inside any method', () => {
-    const file = [
-      'class MyClass {',
-      '  private value = 10;',
-      '  getName() { return "test"; }',
-      '}',
-    ].join('\n');
-    const oldCode = 'private value = 10;';
-    const newCode = 'private value = 20;';
-    const postEdit = file.replace(oldCode, newCode);
-    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
-    assert.deepEqual(result, ['MyClass']);
+  it('DOES detect useCallback const as a function', () => {
+    const code = `
+export function MyComponent() {
+  const handler = useCallback(() => { console.log('hi'); }, []);
+  return null;
+}`;
+    const result = analyzeChanges('', code, code);
+    assert.ok(result.functionUsage.created.includes('handler'),
+      `'handler' should be detected — useCallback wraps a function`);
   });
 
-  it('handles multiple classes in one file correctly', () => {
-    const file = [
-      'class First {',
-      '  run() { return 1; }',
-      '}',
-      'class Second {',
-      '  private execute() {',
-      '    const val = compute();',
-      '    return val;',
-      '  }',
-      '}',
-    ].join('\n');
-    const oldCode = 'const val = compute();';
-    const newCode = 'const val = compute(42);';
-    const postEdit = file.replace(oldCode, newCode);
-    const result = findEnclosingFunctions(postEdit, oldCode, newCode);
-    assert.deepEqual(result, ['execute']);
+  it('DOES detect React.memo wrapped component as a function', () => {
+    const code = `export const MyComp = React.memo(function MyComp(props: any) { return null; });`;
+    const result = analyzeChanges('', code, code);
+    // Should detect either the const name or the inner function name (or both)
+    const created = result.functionUsage.created;
+    assert.ok(created.includes('MyComp'),
+      `'MyComp' should be detected — React.memo wraps a component function`);
+  });
+
+  it('handles new file with no declarations', () => {
+    const result = analyzeChanges('', 'const x = 1;\nconst y = 2;', 'const x = 1;');
+    assert.equal(result.functionUsage.modified.length, 0);
+    assert.equal(result.functionUsage.created.length, 0);
+    assert.equal(result.typeUsage.modified.length, 0);
+    assert.equal(result.typeUsage.created.length, 0);
+  });
+});
+
+describe('requiresJSDoc flag', () => {
+  it('function declarations require JSDoc', () => {
+    const { functions } = discoverAllDeclarations('function foo() { return 1; }');
+    const foo = functions.get('foo');
+    assert.ok(foo && foo[0].requiresJSDoc === true);
+  });
+
+  it('const arrow functions require JSDoc', () => {
+    const { functions } = discoverAllDeclarations('const bar = () => { return 1; };');
+    const bar = functions.get('bar');
+    assert.ok(bar && bar[0].requiresJSDoc === true);
+  });
+
+  it('useCallback wrapped functions require JSDoc', () => {
+    const { functions } = discoverAllDeclarations('const handler = useCallback(() => { }, []);');
+    const handler = functions.get('handler');
+    assert.ok(handler && handler[0].requiresJSDoc === true);
+  });
+
+  it('named function expressions in .map() do NOT require JSDoc', () => {
+    const code = 'function outer() { items.map(function mapItem(item) { return item; }); }';
+    const { functions } = discoverAllDeclarations(code);
+    const mapItem = functions.get('mapItem');
+    assert.ok(mapItem && mapItem[0].requiresJSDoc === false,
+      'Inline .map callback should not require JSDoc');
+  });
+
+  it('named function expressions in useMemo do NOT require JSDoc', () => {
+    const code = 'const { x } = useMemo(function computeX() { return { x: 1 }; }, []);';
+    const { functions } = discoverAllDeclarations(code);
+    const computeX = functions.get('computeX');
+    assert.ok(computeX && computeX[0].requiresJSDoc === false,
+      'useMemo named callback should not require JSDoc');
+  });
+
+  it('named function expressions in .filter() do NOT require JSDoc', () => {
+    const code = 'function outer() { items.filter(function hasValue(item) { return !!item; }); }';
+    const { functions } = discoverAllDeclarations(code);
+    const hasValue = functions.get('hasValue');
+    assert.ok(hasValue && hasValue[0].requiresJSDoc === false,
+      'Inline .filter callback should not require JSDoc');
+  });
+
+  it('class methods require JSDoc', () => {
+    const code = 'class Foo { bar() { return 1; } }';
+    const { functions } = discoverAllDeclarations(code);
+    const bar = functions.get('bar');
+    assert.ok(bar && bar[0].requiresJSDoc === true);
+  });
+
+  it('React.memo wrapped components require JSDoc', () => {
+    const code = 'export const MyComp = React.memo(function MyComp(props: any) { return null; });';
+    const { functions } = discoverAllDeclarations(code);
+    const myComp = functions.get('MyComp');
+    assert.ok(myComp && myComp.some(e => e.requiresJSDoc === true),
+      'React.memo wrapped component should require JSDoc');
   });
 });

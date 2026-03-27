@@ -571,6 +571,7 @@ export function buildFirstAttemptPrompt(context: {
   typeJsdocViolations: Map<string, string[]>;
   isNewFile?: boolean;
   fullFileContent?: string;
+  deletedFunctions?: string[];
 }): string {
   const { filePath, extractedFunctions, extractedTypes, propertyAccesses, patternContext, jsdocViolations, typeJsdocViolations } = context;
 
@@ -640,6 +641,11 @@ ${type.fullCode}
       })
       .join('\n\n');
   }
+
+  // ── Deleted functions (excluded from DRY analysis) ──
+  const deletedSection = context.deletedFunctions && context.deletedFunctions.length > 0
+    ? `\n== FUNCTIONS BEING DELETED BY THIS EDIT ==\n\nThe following functions are being REMOVED from the file by this edit. Do NOT flag JSDoc issues, DRY violations, or any other problems with these functions — they will no longer exist after the edit lands:\n${context.deletedFunctions.map(name => `- ${name}`).join('\n')}\n\nIf a "similar existing function" from the code index matches one of these deleted function names, IGNORE it for DRY analysis — it is stale index data that will be cleaned up on the next index rebuild.\n`
+    : '';
 
   // ── Similar existing functions (DRY enforcement) ──
   let similarSection: string;
@@ -721,7 +727,7 @@ ${type.fullCode}
     : '';
 
   return `FILE: ${filePath}${context.isNewFile ? ' (NEW FILE)' : ''}
-${newFileSection}
+${newFileSection}${deletedSection}
 == FUNCTIONS BEING EDITED ==
 
 ${functionsSection}

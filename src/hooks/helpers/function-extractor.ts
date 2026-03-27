@@ -119,12 +119,13 @@ function findJSDocBefore(content: string, nodeStart: number): string {
  * @domain function-extraction, ast-parsing
  * @tags ast-node, declaration, intermediate-result
  */
-interface DiscoveredFunction {
+export interface DiscoveredFunction {
   name: string;
   fullStart: number;
   fullEnd: number;
   lineNumber: number;
   jsdocText: string;
+  requiresJSDoc: boolean;  // true for declarations (function statements, const assignments, class methods); false for inline callbacks (arguments to .map, useMemo, etc.)
 }
 
 /**
@@ -177,6 +178,7 @@ function discoverFunctions(sourceFile: SourceFile, content: string): Map<string,
         fullEnd: funcDecl.getEnd(),
         lineNumber: getLineNumber(nodeStart),
         jsdocText,
+        requiresJSDoc: true,  // Function declarations are always real declarations
       });
     }
 
@@ -194,13 +196,20 @@ function discoverFunctions(sourceFile: SourceFile, content: string): Map<string,
                           initKind === SyntaxKind.FunctionExpression;
 
       // Wrapped: React.memo(function...), observer(function...), useCallback(() => ...), etc.
+      // Value-returning hooks (useMemo, useRef, etc.) are excluded — they return values, not functions.
       let isWrappedFuncLike = false;
       if (initKind === SyntaxKind.CallExpression) {
-        const callArgs = init.asKindOrThrow(SyntaxKind.CallExpression).getArguments();
-        if (callArgs.length > 0) {
-          const firstArgKind = callArgs[0].getKind();
-          isWrappedFuncLike = firstArgKind === SyntaxKind.ArrowFunction ||
-                              firstArgKind === SyntaxKind.FunctionExpression;
+        const callExpr = init.asKindOrThrow(SyntaxKind.CallExpression);
+        const calleeName = callExpr.getExpression().getText();
+
+        const valueReturningHooks = new Set(['useMemo', 'useRef', 'useState', 'useReducer', 'useContext']);
+        if (!valueReturningHooks.has(calleeName)) {
+          const callArgs = callExpr.getArguments();
+          if (callArgs.length > 0) {
+            const firstArgKind = callArgs[0].getKind();
+            isWrappedFuncLike = firstArgKind === SyntaxKind.ArrowFunction ||
+                                firstArgKind === SyntaxKind.FunctionExpression;
+          }
         }
       }
 
@@ -218,6 +227,7 @@ function discoverFunctions(sourceFile: SourceFile, content: string): Map<string,
         fullEnd: varStatement ? varStatement.getEnd() : varDecl.getEnd(),
         lineNumber: getLineNumber(statementStart),
         jsdocText,
+        requiresJSDoc: true,  // Const assignments to functions are real declarations
       });
     }
 
@@ -240,18 +250,19 @@ function discoverFunctions(sourceFile: SourceFile, content: string): Map<string,
         fullEnd: methodNode.getEnd(),
         lineNumber: getLineNumber(nodeStart),
         jsdocText,
+        requiresJSDoc: true,  // Class methods are real declarations
       });
     }
 
-    // 4. Named function expressions anywhere: useMemo(function computeSelectionBounds() { ... })
-    //    These have a name on the FunctionExpression itself, regardless of where they appear
+    // 4. Named function expressions passed as arguments: .map(function foo() {}), useMemo(function bar() {})
+    //    These are inline callbacks — tracked for change detection but don't require JSDoc.
+    //    Named for stack traces/debugging, not as standalone declarations.
     if (node.getKind() === SyntaxKind.FunctionExpression) {
       const funcExpr = node.asKindOrThrow(SyntaxKind.FunctionExpression);
       const name = funcExpr.getName();
       if (!name) return;
 
       // Skip if already captured by case 2 (const name = function name() {})
-      // — check if the parent chain is a VariableDeclaration with the same name
       const parent = funcExpr.getParent();
       if (parent?.getKind() === SyntaxKind.VariableDeclaration) {
         const parentName = (parent as any).getName?.();
@@ -268,6 +279,7 @@ function discoverFunctions(sourceFile: SourceFile, content: string): Map<string,
         fullEnd: funcExpr.getEnd(),
         lineNumber: getLineNumber(nodeStart),
         jsdocText,
+        requiresJSDoc: false,  // Inline callbacks don't require JSDoc
       });
     }
 
@@ -291,11 +303,150 @@ function discoverFunctions(sourceFile: SourceFile, content: string): Map<string,
         fullEnd: propAssign.getEnd(),
         lineNumber: getLineNumber(nodeStart),
         jsdocText,
+        requiresJSDoc: true,  // Object method properties are declarations
       });
     }
   });
 
   return results;
+}
+
+/**
+ * @what Represents a discovered type/interface/enum declaration in the AST
+ * @domain type-extraction, ast-parsing
+ * @tags ast-node, type-declaration, intermediate-result
+ */
+export interface DiscoveredType {
+  name: string;
+  kind: 'interface' | 'type' | 'enum';
+  fullStart: number;
+  fullEnd: number;
+  lineNumber: number;
+  jsdocText: string;
+}
+
+/**
+ * @what Discovers all type/interface/enum declarations in a source file
+ * @how Uses ts-morph's getInterfaces(), getTypeAliases(), getEnums() to find all type declarations
+ * @why Builds a lookup map for type change detection and JSDoc extraction
+ *
+ * @param {SourceFile} sourceFile Parsed ts-morph source file
+ * @param {string} content Original file content string
+ * @returns {Map<string, DiscoveredType[]>} Map of type name to discovered declarations
+ *
+ * @sideeffects None
+ * @systemlayer Code Analysis
+ * @domain type-discovery, ast-walking
+ * @tags ast-walk, interface, type-alias, enum, discovery
+ */
+function discoverTypes(sourceFile: SourceFile, content: string): Map<string, DiscoveredType[]> {
+  const results = new Map<string, DiscoveredType[]>();
+
+  function getLineNumber(pos: number): number {
+    let line = 1;
+    for (let i = 0; i < pos && i < content.length; i++) {
+      if (content[i] === '\n') line++;
+    }
+    return line;
+  }
+
+  function addResult(name: string, entry: DiscoveredType): void {
+    const existing = results.get(name) || [];
+    existing.push(entry);
+    results.set(name, existing);
+  }
+
+  function processNode(node: Node, kind: 'interface' | 'type' | 'enum'): void {
+    const name = (node as any).getName?.();
+    if (!name) return;
+
+    const nodeStart = node.getStart();
+    const jsdocText = findJSDocBefore(content, nodeStart);
+    const fullStart = jsdocText ? content.lastIndexOf(jsdocText, nodeStart) : nodeStart;
+
+    addResult(name, {
+      name,
+      kind,
+      fullStart,
+      fullEnd: node.getEnd(),
+      lineNumber: getLineNumber(nodeStart),
+      jsdocText,
+    });
+  }
+
+  for (const iface of sourceFile.getInterfaces()) {
+    processNode(iface, 'interface');
+  }
+  for (const alias of sourceFile.getTypeAliases()) {
+    processNode(alias, 'type');
+  }
+  for (const enumDecl of sourceFile.getEnums()) {
+    processNode(enumDecl, 'enum');
+  }
+
+  return results;
+}
+
+/**
+ * @what Discovers all function and type declarations in a source file via AST
+ * @how Parses content with ts-morph, runs discoverFunctions() and discoverTypes() on the AST
+ * @why Provides complete declaration maps for change detection without regex parsing
+ *
+ * @param {string} content Source code to analyze
+ * @returns {object} Maps of function and type declarations found in the content
+ *
+ * @sideeffects Updates cached ts-morph SourceFile
+ * @systemlayer Code Analysis
+ * @domain declaration-discovery, ast-parsing
+ * @tags ast-parsing, function-discovery, type-discovery, change-detection
+ */
+export function discoverAllDeclarations(content: string): {
+  functions: Map<string, DiscoveredFunction[]>;
+  types: Map<string, DiscoveredType[]>;
+} {
+  if (!content || content.trim().length === 0) {
+    return { functions: new Map(), types: new Map() };
+  }
+
+  try {
+    const sourceFile = parseFile(content);
+    return {
+      functions: discoverFunctions(sourceFile, content),
+      types: discoverTypes(sourceFile, content),
+    };
+  } catch {
+    return { functions: new Map(), types: new Map() };
+  }
+}
+
+/**
+ * @what Checks if source code has syntax errors that would make AST analysis unreliable
+ * @how Parses content with ts-morph and checks for syntax-level diagnostics
+ * @why When an edit creates invalid intermediate syntax (e.g., partial function deletion),
+ *   validation should allow the edit rather than flagging issues on broken code
+ *
+ * @param {string} content Source code to check
+ * @returns {string[]} Array of syntax error messages, empty if valid
+ *
+ * @sideeffects Updates cached ts-morph SourceFile
+ * @systemlayer Code Analysis
+ * @domain syntax-validation, ast-parsing
+ * @tags syntax-check, parse-errors, ts-morph, validation-gate
+ */
+export function getSyntaxErrors(content: string): string[] {
+  if (!content || content.trim().length === 0) return [];
+
+  try {
+    const sourceFile = parseFile(content);
+    const diagnostics = sourceFile.getPreEmitDiagnostics();
+    // Only return actual syntax errors (category 1 = Error), not warnings or suggestions
+    return diagnostics
+      .filter(d => d.getCategory() === 1)
+      .map(d => d.getMessageText().toString())
+      .slice(0, 5); // Cap at 5 to avoid noise
+  } catch {
+    return ['Failed to parse file'];
+  }
 }
 
 /**
@@ -349,6 +500,7 @@ export function extractFunctionWithJSDoc(
       isModified: false,
       lineInFile: best.lineNumber,
       jsdocTags,
+      requiresJSDoc: best.requiresJSDoc,
     };
   } catch {
     // If ts-morph parsing fails (e.g., severely malformed code), return null
