@@ -436,14 +436,27 @@ export function discoverAllDeclarations(content: string): {
 export function getSyntaxErrors(content: string): string[] {
   if (!content || content.trim().length === 0) return [];
 
+  // Diagnostic codes to IGNORE — these are semantic errors from the isolated parser
+  // not being able to resolve imports, not actual syntax problems with the code.
+  const ignoredCodes = new Set([
+    2307, // Cannot find module '...' or its corresponding type declarations
+    2304, // Cannot find name '...' (unresolved identifiers from missing imports)
+    2305, // Module '...' has no exported member '...'
+    2306, // '...' is not a module
+    2552, // Cannot find name '...' — Did you mean '...'?
+    2580, // Cannot find name 'require'
+    2584, // Cannot find name 'module'
+    6133, // '...' is declared but its value is never read (unused import)
+    6196, // '...' is declared but never used
+  ]);
+
   try {
     const sourceFile = parseFile(content);
     const diagnostics = sourceFile.getPreEmitDiagnostics();
-    // Only return actual syntax errors (category 1 = Error), not warnings or suggestions
     return diagnostics
-      .filter(d => d.getCategory() === 1)
+      .filter(d => d.getCategory() === 1 && !ignoredCodes.has(d.getCode()))
       .map(d => d.getMessageText().toString())
-      .slice(0, 5); // Cap at 5 to avoid noise
+      .slice(0, 5);
   } catch {
     return ['Failed to parse file'];
   }
