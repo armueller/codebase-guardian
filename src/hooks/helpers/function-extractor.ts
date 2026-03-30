@@ -39,8 +39,13 @@ function getProject(): Project {
     cachedProject = new Project({
       useInMemoryFileSystem: true,
       compilerOptions: {
+        target: 99,     // ESNext
+        module: 199,    // ESNext
+        lib: ['lib.esnext.d.ts', 'lib.dom.d.ts'],
         allowJs: true,
         jsx: 2, // React
+        strict: false,  // Don't flag strict-mode issues in isolated parsing
+        noEmit: true,
       },
     });
   }
