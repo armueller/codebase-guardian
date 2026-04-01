@@ -256,7 +256,20 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
     if (!func.requiresJSDoc) continue;
 
     if (!func.hasJSDoc) {
-      jsdocViolations.set(func.name, [`Function '${func.name}' is missing JSDoc entirely`]);
+      // Check if JSDoc exists in the file but got separated from the declaration
+      // (e.g., the edit inserted code between the JSDoc and the function)
+      const jsdocMentionsFunc = new RegExp(`@what[\\s\\S]{0,500}?${func.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`);
+      const jsdocExistsButDetached = jsdocMentionsFunc.test(fullFileContent);
+
+      if (jsdocExistsButDetached) {
+        jsdocViolations.set(func.name, [
+          `Function '${func.name}' has JSDoc in the file, but the edit SEPARATED the JSDoc from the function declaration. ` +
+          `The JSDoc comment block must be directly above the function — your edit inserted code between them. ` +
+          `Fix: include the JSDoc comment in your old_string so it stays attached to the declaration, or move the insertion point above the JSDoc block.`
+        ]);
+      } else {
+        jsdocViolations.set(func.name, [`Function '${func.name}' is missing JSDoc entirely`]);
+      }
     } else if (func.jsdocTags) {
       const issues = validateJSDocCompleteness(func.jsdocTags);
       if (issues.length > 0) {
