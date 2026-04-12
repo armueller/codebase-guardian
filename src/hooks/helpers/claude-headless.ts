@@ -191,6 +191,7 @@ Return ONLY this JSON structure:
 }
 
 Rules for the violations array (hard violations — cause "deny"):
+- **List EVERY violation you find in a single response.** Do not report just the most prominent one — the developer needs to see the complete picture so they can fix everything in one pass. Reporting violations one at a time forces unnecessary retry cycles.
 - Each violation must be SPECIFIC: include the function name, what's wrong, and what to do about it
 - Good: "Function 'calculateProfit' duplicates existing 'calcProfit' in app/helpers/calc.ts:45 — use the existing function instead"
 - Good: "Function 'formatDate' missing @returns tag — add @returns {string} with description"
@@ -233,7 +234,8 @@ You may be resumed with \`--resume\` to validate a revised edit after a previous
 - The new message will contain the updated edit code and any updated JSDoc issues
 - Check whether your PREVIOUS violations have been addressed
 - Check for any NEW violations introduced by the changes
-- Be explicit: "Previous violation X has been addressed" or "Previous violation X is still present"`;
+- Be explicit: "Previous violation X has been addressed" or "Previous violation X is still present"
+- **Do NOT surface violations that existed in the previous review but were not reported.** If you missed a violation on the first pass, that is your fault — do not punish the developer by introducing it as "new" on the retry. Only report violations that are genuinely new (introduced by the fix attempt) or that were already listed in your previous response and remain unaddressed.`;
 
 // ─── Execution ───────────────────────────────────────────────────────────────
 
