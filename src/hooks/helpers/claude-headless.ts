@@ -10,7 +10,9 @@
  */
 
 import { execFileSync } from 'child_process';
-import { appendFileSync } from 'fs';
+import { appendFileSync, existsSync, writeFileSync } from 'fs';
+import path from 'path';
+import os from 'os';
 import { ClaudeValidationResponse, ExtractedFunction, ExtractedType, PropertyAccess } from './types.js';
 import type { PatternContext, FunctionResult } from './code-index-client.js';
 import {
@@ -28,6 +30,36 @@ function log(message: string): void {
     appendFileSync(LOG_PATH, message + '\n');
   } catch {
     // Ignore logging errors
+  }
+}
+
+// ─── MCP Config for Headless ────────────────────────────────────────────────
+
+/**
+ * Generates a temporary MCP config file pointing to the codebase-guardian server.
+ * Returns the path to the config file, or null if the server source isn't available.
+ */
+function getMcpConfigPath(): string | null {
+  const guardianHome = path.join(os.homedir(), '.codebase-guardian');
+  const serverEntry = path.join(guardianHome, 'source', 'dist', 'mcp-server', 'index.js');
+
+  if (!existsSync(serverEntry)) return null;
+
+  const configPath = path.join(guardianHome, '.headless-mcp-config.json');
+  const config = {
+    mcpServers: {
+      'codebase-guardian': {
+        command: 'node',
+        args: [serverEntry],
+      },
+    },
+  };
+
+  try {
+    writeFileSync(configPath, JSON.stringify(config));
+    return configPath;
+  } catch {
+    return null;
   }
 }
 
@@ -173,12 +205,13 @@ This is informational — it helps the developer understand impact. Flag as a vi
 ## Decision Logic
 
 Apply these rules in order:
-1. If ANY DRY violation exists (duplicate function found) → \`"decision": "deny"\`
-2. If ANY JSDoc completeness or accuracy violation exists → \`"decision": "deny"\`
-3. If ANY inline comment quality violation exists (vague section headers, useless short comments) → \`"decision": "deny"\`
-4. If ANY clear pattern/README/naming violation exists → \`"decision": "deny"\`
-5. If only blast radius concerns exist (informational) → \`"decision": "allow"\` but list concerns in violations as warnings
-6. If no violations → \`"decision": "allow"\`
+1. If ANY runtime correctness issue exists (undefined variables, guaranteed type errors, unreachable code, broken references) → \`"decision": "deny"\`. **Exception:** if the edit appears to be part of a multi-step refactor (e.g., renaming a variable, swapping an import, adding a function that will be defined in a follow-up edit), allow the edit but flag the runtime concern as a **suggestion** so the developer is reminded to complete the refactor.
+2. If ANY DRY violation exists (duplicate function found) → \`"decision": "deny"\`
+3. If ANY JSDoc completeness or accuracy violation exists → \`"decision": "deny"\`
+4. If ANY inline comment quality violation exists (vague section headers, useless short comments) → \`"decision": "deny"\`
+5. If ANY clear pattern/README/naming violation exists → \`"decision": "deny"\`
+6. If only blast radius concerns exist (informational) → \`"decision": "allow"\` but list concerns in violations as warnings
+7. If no violations → \`"decision": "allow"\`
 
 ## Output Format
 
@@ -209,6 +242,7 @@ Rules for the suggestions array (soft recommendations — do NOT cause "deny"):
 
 - Do NOT invent violations that aren't supported by the context provided
 - Do NOT flag third-party imports, React hooks, or built-in JS/TS functions as "not found in index"
+- Be STRICT on runtime correctness — references to undefined variables, guaranteed ReferenceErrors, type mismatches that will crash at runtime, and unreachable code paths are ALWAYS hard violations. Never put these in suggestions.
 - Be STRICT on DRY and JSDoc — these are the foundation of code quality
 - Be PRAGMATIC on pattern consistency — flag clear violations, not style nitpicks
 - When in doubt about DRY: if two functions have >70% overlapping logic, it's a violation
@@ -227,6 +261,40 @@ When the prompt indicates a NEW FILE is being created, you will receive the full
 
 Do NOT give new files a pass just because they're new. Apply the same rigor as any edit.
 
+## Coding Best Practices (Adapted from NASA's Power of Ten)
+
+In addition to any best practice rules found via semantic search and project documentation, the following 10 principles should be enforced to the best of your ability on all edits. Use judgment on severity — not all violations warrant a hard denial, but all are worth flagging. Flag clear violations as violations (deny). Flag borderline cases or minor concerns as suggestions (allow but note).
+
+### 1. Keep it linear
+No deep nesting. Code should read top to bottom. If a function has more than 3 levels of nesting (conditionals inside conditionals inside conditionals), flag it. Suggest flattening with early returns, guard clauses, or extraction into helper functions.
+
+### 2. Bound every loop
+Every loop, retry mechanism, and polling interval needs an explicit upper bound. Flag \`while(true)\` without a break condition, unbounded recursion, retry logic without a max attempt count, and polling without a timeout. "This will practically never exceed N" is not a bound.
+
+### 3. Know what you own
+Every resource opened must be closed — database connections, file handles, event listeners, timers. Check error paths too, not just the happy path. A \`try\` that opens a connection but only closes it in the success branch is a resource leak.
+
+### 4. One function, one job
+Functions should do exactly one thing, describable in a sentence without the word "and." Flag functions longer than ~60 lines — they almost always need decomposition. Monolithic functions that handle multiple concerns should be split.
+
+### 5. State your assumptions
+Functions with preconditions should validate them. If a function assumes a parameter is non-null, non-empty, within a range, or of a specific shape, that assumption should be checked — via type narrowing, assertions, or guard clauses. Don't flag every missing check, but flag functions where unstated assumptions could lead to silent corruption.
+
+### 6. Never swallow errors
+Empty \`catch {}\` blocks, bare \`catch (e) { /* ignore */ }\`, and unchecked error returns are violations. Every error must be logged, re-thrown, or explicitly handled. Silent failure suppresses information needed for debugging. The only exception is intentional fire-and-forget operations that explicitly document why the error is safe to discard.
+
+### 7. Narrow your state
+Data should live as close to its use as possible. Flag module-level mutable variables (\`let\` at module scope), unnecessary class-level state that could be local, and functions that read/write distant global state. Prefer passing data explicitly over reaching into shared mutable state.
+
+### 8. Surface your side effects
+I/O, mutations, network calls, and database writes should be obvious at the call site. Flag functions with innocent-looking names (e.g., \`getUser\`, \`formatData\`) that contain hidden writes, API calls, or state mutations. Side effects should be declared in \`@sideeffects\` and reflected in naming (\`fetch\`, \`save\`, \`update\`, \`send\` — not \`get\` or \`compute\`).
+
+### 9. One layer of magic
+Excessive indirection makes code untraceable. Flag deeply chained abstractions where following "what actually runs" requires jumping through 3+ layers of wrappers, decorators, or dynamic dispatch. Prefer composition you can read linearly over cleverness you have to decode.
+
+### 10. Warnings are errors
+TypeScript strict mode violations, eslint-disable comments, \`@ts-ignore\`, and \`any\` type assertions are red flags. Flag liberal use of \`as any\`, \`// @ts-ignore\`, and \`eslint-disable\` without explanatory comments. These suppress the tools designed to catch bugs.
+
 ## Session Continuity
 
 You may be resumed with \`--resume\` to validate a revised edit after a previous denial. When this happens:
@@ -235,7 +303,21 @@ You may be resumed with \`--resume\` to validate a revised edit after a previous
 - Check whether your PREVIOUS violations have been addressed
 - Check for any NEW violations introduced by the changes
 - Be explicit: "Previous violation X has been addressed" or "Previous violation X is still present"
-- **Do NOT surface violations that existed in the previous review but were not reported.** If you missed a violation on the first pass, that is your fault — do not punish the developer by introducing it as "new" on the retry. Only report violations that are genuinely new (introduced by the fix attempt) or that were already listed in your previous response and remain unaddressed.`;
+- **Do NOT surface violations that existed in the previous review but were not reported.** If you missed a violation on the first pass, that is your fault — do not punish the developer by introducing it as "new" on the retry. Only report violations that are genuinely new (introduced by the fix attempt) or that were already listed in your previous response and remain unaddressed.
+
+## Index Query Tools
+
+You have access to the codebase index via MCP tools. Use the \`execute\` tool to write TypeScript queries when the pre-loaded context above is insufficient to make a confident judgment.
+
+Examples of when to query:
+- You see an unfamiliar invocation pattern and want to check if sibling files use the same pattern: \`return api.functionsByDirectory("src/utils").map(f => ({ name: f.name, desc: f.description }))\`
+- You suspect a DRY violation but none of the pre-loaded similar functions are close enough: \`return await api.semanticSearch("validate user input and sanitize")\`
+- You want to check callers of a function that wasn't in the pre-loaded blast radius: \`return api.callers("helperFunction").map(c => ({ name: c.name, file: c.file_path }))\`
+- You want to search documentation for a specific pattern or convention: \`return api.searchDocs("error handling pattern")\`
+
+Do NOT query for information already present in the pre-loaded context above. Only query when you need to go deeper. Each query adds latency, so be targeted.
+
+Your response must still be ONLY a JSON object — any tool calls happen before your final response.`;
 
 // ─── Execution ───────────────────────────────────────────────────────────────
 
@@ -307,14 +389,22 @@ async function executeFirstAttempt(
 ): Promise<ClaudeValidationResponse> {
   try {
     log(`  [HEADLESS] Starting first attempt with ${timeoutMs}ms timeout...`);
-    const t2 = Date.now();
-    const result = execFileSync('claude', [
+    const mcpConfig = getMcpConfigPath();
+    if (mcpConfig) log(`  [HEADLESS] MCP config available at ${mcpConfig}`);
+
+    const cliArgs = [
       '-p', prompt,
       '--system-prompt', SYSTEM_PROMPT,
       '--output-format', 'json',
       '--permission-mode', 'bypassPermissions',
-      '--model', 'opus'
-    ], {
+      '--model', 'opus',
+    ];
+    if (mcpConfig) {
+      cliArgs.push('--mcp-config', mcpConfig);
+    }
+
+    const t2 = Date.now();
+    const result = execFileSync('claude', cliArgs, {
       encoding: 'utf-8',
       timeout: timeoutMs,
       cwd: resolveConfig().projectRoot,
@@ -371,14 +461,21 @@ async function executeWithResume(
 ): Promise<ClaudeValidationResponse> {
   try {
     log(`  [HEADLESS] Resuming session ${headlessSessionId} (attempt #${previousAttemptCount + 1})...`);
-    const t2 = Date.now();
-    const result = execFileSync('claude', [
+    const mcpConfig = getMcpConfigPath();
+
+    const cliArgs = [
       '--resume', headlessSessionId,
       '-p', prompt,
       '--output-format', 'json',
       '--permission-mode', 'bypassPermissions',
-      '--model', 'opus'
-    ], {
+      '--model', 'opus',
+    ];
+    if (mcpConfig) {
+      cliArgs.push('--mcp-config', mcpConfig);
+    }
+
+    const t2 = Date.now();
+    const result = execFileSync('claude', cliArgs, {
       encoding: 'utf-8',
       timeout: timeoutMs,
       cwd: resolveConfig().projectRoot,
@@ -582,7 +679,9 @@ export function buildFirstAttemptPrompt(context: {
     .map(func => {
       const jsdocIssues = jsdocViolations.get(func.name);
       let jsdocStatus: string;
-      if (!func.hasJSDoc) {
+      if (!func.requiresJSDoc) {
+        jsdocStatus = 'JSDoc: Not required (inline callback — do NOT flag missing JSDoc as a violation)';
+      } else if (!func.hasJSDoc) {
         jsdocStatus = 'JSDoc: MISSING (confirmed violation)';
       } else if (jsdocIssues && jsdocIssues.length > 0) {
         jsdocStatus = `JSDoc Issues (confirmed by static analysis):\n${jsdocIssues.map(v => `  - ${v}`).join('\n')}`;
@@ -795,7 +894,9 @@ export function buildRetryPrompt(context: {
     .map(func => {
       const jsdocIssues = jsdocViolations.get(func.name);
       let jsdocStatus: string;
-      if (!func.hasJSDoc) {
+      if (!func.requiresJSDoc) {
+        jsdocStatus = 'JSDoc: Not required (inline callback — do NOT flag missing JSDoc as a violation)';
+      } else if (!func.hasJSDoc) {
         jsdocStatus = 'JSDoc: MISSING (confirmed violation)';
       } else if (jsdocIssues && jsdocIssues.length > 0) {
         jsdocStatus = `JSDoc Issues (confirmed by static analysis):\n${jsdocIssues.map(v => `  - ${v}`).join('\n')}`;

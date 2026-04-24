@@ -687,8 +687,29 @@ export function getRelevantDocs(domains: string[], tags: string[]): RelevantDoc[
 // ─── Pattern Context Builder ─────────────────────────────────────────────────
 
 /**
+ * Runs semantic search from the hook context.
+ * Wraps the embeddings pipeline with the hook's readonly DB connection.
+ * Returns hydrated FunctionResult[] in similarity order.
+ */
+async function semanticSearchFromHook(hookDb: any, query: string, limit: number): Promise<FunctionResult[]> {
+  // Dynamic import — embeddings.ts is ESM with heavy dependencies
+  const { semanticSearch } = await import('../../mcp-server/embeddings.js');
+  const results = await semanticSearch(hookDb, query, limit);
+  if (results.length === 0) return [];
+
+  const funcResults: FunctionResult[] = [];
+  for (const r of results) {
+    const row = hookDb.prepare('SELECT * FROM functions WHERE id = ?').get(r.functionId) as FunctionRow | undefined;
+    if (row) {
+      funcResults.push(hydrateFunction(hookDb, row));
+    }
+  }
+  return funcResults;
+}
+
+/**
  * @what Builds complete pattern context from the code index for a given edit
- * @how Queries directory README, siblings, called functions, callers, directory patterns, runs FTS similarity search, and searches inline comments for DRY enforcement
+ * @how Queries directory README, siblings, called functions, callers, directory patterns, runs semantic similarity search (with FTS fallback), and searches inline comments for DRY enforcement
  * @why Assembles all code index data needed to validate code quality — DRY enforcement is the primary purpose of the semantic index
  *
  * @param {string} filePath File being edited
@@ -703,13 +724,13 @@ export function getRelevantDocs(domains: string[], tags: string[]): RelevantDoc[
  * @domain code-quality, dry-enforcement, pattern-alignment, context-assembly
  * @tags pattern-context, context-builder, dry-enforcement, similarity-search, code-index
  */
-export function buildPatternContext(
+export async function buildPatternContext(
   filePath: string,
   modifiedFunctions: string[],
   createdFunctions: string[],
   calledFunctions: string[],
   editComments: string[] = []
-): PatternContext {
+): Promise<PatternContext> {
   // Normalize to relative path — the code index stores relative paths (e.g., "app/controllers/...")
   // but hooks receive absolute paths from tool input (e.g., "/Users/.../app/controllers/...")
   const repoRoot = getRepoRoot();
@@ -747,14 +768,23 @@ export function buildPatternContext(
   const functionsToSearch = [...createdFunctions, ...modifiedFunctions];
 
   for (const funcName of functionsToSearch) {
-    // Convert camelCase/PascalCase to space-separated words for better FTS matching
-    // e.g., "calculateAverageProfitLoss" -> "calculate Average Profit Loss"
+    // Convert camelCase/PascalCase to space-separated words for search
     const searchTerms = funcName
       .replace(/([a-z])([A-Z])/g, '$1 $2')
       .replace(/([A-Z])([A-Z][a-z])/g, '$1 $2')
       .toLowerCase();
 
-    const similar = searchFTS(searchTerms, 5);
+    // Try semantic search first for better conceptual matching,
+    // fall back to FTS if embeddings are unavailable
+    let similar: FunctionResult[] = [];
+    try {
+      similar = await semanticSearchFromHook(getDb(), searchTerms, 5);
+    } catch {
+      // Embedding model unavailable — fall back to FTS
+    }
+    if (similar.length === 0) {
+      similar = searchFTS(searchTerms, 5);
+    }
 
     // Filter out the function itself (don't flag a function as similar to itself)
     const filtered = similar.filter(f => f.name !== funcName);

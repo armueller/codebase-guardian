@@ -25,6 +25,24 @@ ok()    { echo -e "${GREEN}[ok]${NC}    $1"; }
 warn()  { echo -e "${YELLOW}[warn]${NC}  $1"; }
 error() { echo -e "${RED}[error]${NC} $1"; }
 
+# ─── Ensure Correct Node Version ─────────────────────────────────────────────
+
+if [ -s "$NVM_DIR/nvm.sh" ]; then
+  . "$NVM_DIR/nvm.sh"
+  nvm use --silent 2>/dev/null || nvm use --silent 22 2>/dev/null || true
+elif [ -s "$HOME/.nvm/nvm.sh" ]; then
+  export NVM_DIR="$HOME/.nvm"
+  . "$NVM_DIR/nvm.sh"
+  nvm use --silent 2>/dev/null || nvm use --silent 22 2>/dev/null || true
+fi
+
+NODE_VERSION=$(node -v | sed 's/v//' | cut -d. -f1)
+if [[ "$NODE_VERSION" -lt 18 ]]; then
+  error "Node.js >= 18 required (found $(node -v))"
+  error "Run 'nvm use 22' or install a newer Node version"
+  exit 1
+fi
+
 # ─── Check Installation ──────────────────────────────────────────────────────
 
 if [[ ! -d "$GUARDIAN_HOME" ]]; then

@@ -35,4 +35,14 @@ Example:
  * @tags cost-basis, weighted-average, wash-sale, tax-lots, portfolio-calculation
  */
 ```
+
+## Using the Codebase Index
+
+Before creating new functions or modifying existing ones, use the codebase-guardian MCP tools to research the codebase:
+
+- **`execute`** — Write TypeScript against the index API for composed queries. Example: `const callers = api.callers("myFunc"); return callers.map(c => c.file_path);`
+- **`search`** — Find functions by keyword. Use before writing new code to check for existing utilities.
+- **`callers` / `callees` / `impact`** — Understand blast radius before changing function signatures.
+
+A 30-second query saves a 15-second validation denial and retry cycle.
 <!-- /codebase-guardian -->

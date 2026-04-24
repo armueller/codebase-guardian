@@ -308,7 +308,7 @@ function discoverFunctions(sourceFile: SourceFile, content: string): Map<string,
         fullEnd: propAssign.getEnd(),
         lineNumber: getLineNumber(nodeStart),
         jsdocText,
-        requiresJSDoc: true,  // Object method properties are declarations
+        requiresJSDoc: false,  // Object property methods are internal to the parent object — the parent const/export carries the JSDoc
       });
     }
   });
