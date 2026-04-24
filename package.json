@@ -1,6 +1,6 @@
 {
   "name": "codebase-guardian",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Semantic code index + automated validation hooks for TypeScript codebases",
   "type": "module",
   "main": "dist/mcp-server/index.js",

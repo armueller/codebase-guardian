@@ -20,6 +20,7 @@ import {
   analyzeChanges
 } from './helpers/code-analyzer.js';
 import { validateJSDocCompleteness, validateTypeJSDocCompleteness } from './helpers/jsdoc-parser.js';
+import { enhanceViolationWithQueryHint } from './helpers/denial-hints.js';
 import {
   executeClaudeHeadless,
   buildFirstAttemptPrompt,
@@ -102,9 +103,9 @@ async function main() {
     const result = await validateEdit(hookInput);
 
     if (result.action === 'allow') {
-      allowAndExit(result.message || 'Validation passed');
+      allowAndExit(result.message || 'Validation passed', result.suggestions);
     } else {
-      denyAndExit(result.message || 'Validation failed', result.violations);
+      denyAndExit(result.message || 'Validation failed', result.violations, result.suggestions);
     }
   } catch (error) {
     // On error, fail open (allow edit) but log the error
@@ -379,7 +380,7 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
     const editComments = extractInlineComments(newString);
     // Include old names from renames in the modified list for blast radius (caller lookup)
     const modifiedForContext = [...usage.modified, ...usage.renamed.map(r => r.oldName)];
-    const patternContext = buildPatternContext(
+    const patternContext = await buildPatternContext(
       filePath,
       modifiedForContext,
       usage.created,
@@ -460,12 +461,15 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
       setDenialInfo(sessionKey, onDiskHash, validationResult.reasoning, proposedHash);
     }
 
+    const enhancedViolations = validationResult.violations.map(enhanceViolationWithQueryHint);
+
     return {
       action: validationResult.decision === 'allow' ? 'allow' : 'deny',
       message: validationResult.decision === 'allow'
         ? `Code Quality Passed: ${validationResult.reasoning}`
         : `BLOCKED: ${validationResult.reasoning}`,
-      violations: validationResult.violations
+      violations: enhancedViolations,
+      suggestions: validationResult.suggestions.length > 0 ? validationResult.suggestions : undefined
     };
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -589,9 +593,14 @@ function log(message: string): void {
  * @domain hook-response, process-exit
  * @tags exit-handler, allow-decision, stdout-output, process-termination, success-path
  */
-function allowAndExit(message?: string): never {
+function allowAndExit(message?: string, suggestions?: string[]): never {
   log(`ALLOW: ${message || 'Edit allowed'}`);
-  console.log(JSON.stringify({ action: 'allow', message }));
+  const response: Record<string, unknown> = { action: 'allow', message };
+  if (suggestions && suggestions.length > 0) {
+    response.suggestions = suggestions;
+    log(`  Suggestions returned to caller: ${suggestions.length}`);
+  }
+  console.log(JSON.stringify(response));
   process.exit(0);
 }
 
@@ -609,13 +618,16 @@ function allowAndExit(message?: string): never {
  * @domain hook-response, process-exit
  * @tags exit-handler, deny-decision, stderr-output, process-termination, block-edit
  */
-function denyAndExit(message: string, violations?: string[]): never {
+function denyAndExit(message: string, violations?: string[], suggestions?: string[]): never {
   log(`DENY: ${message}`);
   if (violations) {
     log(`Violations:\n${violations.join('\n')}`);
   }
 
-  const reason = violations ? `${message}\n\n${violations.join('\n')}` : message;
+  let reason = violations ? `${message}\n\n${violations.join('\n')}` : message;
+  if (suggestions && suggestions.length > 0) {
+    reason += `\n\nSuggestions:\n${suggestions.map(s => `- ${s}`).join('\n')}`;
+  }
   // Output deny decision on stderr with exit code 2 (Claude Code hook protocol)
   console.error(JSON.stringify({ permissionDecision: 'deny' as const, reason }));
   process.exit(2);

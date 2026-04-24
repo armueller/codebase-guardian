@@ -74,6 +74,17 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   exit 0
 fi
 
+# ─── Ensure Correct Node Version ─────────────────────────────────────────────
+
+if [ -n "${NVM_DIR:-}" ] && [ -s "$NVM_DIR/nvm.sh" ]; then
+  . "$NVM_DIR/nvm.sh"
+  nvm use --silent 2>/dev/null || nvm use --silent 22 2>/dev/null || true
+elif [ -s "$HOME/.nvm/nvm.sh" ]; then
+  export NVM_DIR="$HOME/.nvm"
+  . "$NVM_DIR/nvm.sh"
+  nvm use --silent 2>/dev/null || nvm use --silent 22 2>/dev/null || true
+fi
+
 # ─── Prerequisites ────────────────────────────────────────────────────────────
 
 info "Checking prerequisites..."
