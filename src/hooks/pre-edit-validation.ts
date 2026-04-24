@@ -105,7 +105,7 @@ async function main() {
     if (result.action === 'allow') {
       allowAndExit(result.message || 'Validation passed', result.suggestions);
     } else {
-      denyAndExit(result.message || 'Validation failed', result.violations);
+      denyAndExit(result.message || 'Validation failed', result.violations, result.suggestions);
     }
   } catch (error) {
     // On error, fail open (allow edit) but log the error
@@ -618,13 +618,16 @@ function allowAndExit(message?: string, suggestions?: string[]): never {
  * @domain hook-response, process-exit
  * @tags exit-handler, deny-decision, stderr-output, process-termination, block-edit
  */
-function denyAndExit(message: string, violations?: string[]): never {
+function denyAndExit(message: string, violations?: string[], suggestions?: string[]): never {
   log(`DENY: ${message}`);
   if (violations) {
     log(`Violations:\n${violations.join('\n')}`);
   }
 
-  const reason = violations ? `${message}\n\n${violations.join('\n')}` : message;
+  let reason = violations ? `${message}\n\n${violations.join('\n')}` : message;
+  if (suggestions && suggestions.length > 0) {
+    reason += `\n\nSuggestions:\n${suggestions.map(s => `- ${s}`).join('\n')}`;
+  }
   // Output deny decision on stderr with exit code 2 (Claude Code hook protocol)
   console.error(JSON.stringify({ permissionDecision: 'deny' as const, reason }));
   process.exit(2);

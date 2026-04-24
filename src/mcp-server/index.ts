@@ -174,11 +174,11 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'execute',
-    description: 'Execute TypeScript code against the codebase index API. Write code using the `api` object to compose complex queries in a single call. Available methods: api.search(query, filters?), api.semanticSearch(query, limit?) [async — use await], api.callers(name), api.callees(name), api.impact(name, depth?), api.lookup(name, filePath?), api.lookupByFile(filePath), api.functionsByDirectory(dirPath), api.searchComments(query, limit?), api.searchDocs(query, limit?), api.listDomains(), api.listTags(domain?), api.listSystemLayers(), api.indexStatus(). Return your result — it will be JSON-serialized.',
+    description: 'Execute JavaScript code against the codebase index API. Write code using the `api` object to compose complex queries in a single call. Available methods: api.search(query, filters?), api.semanticSearch(query, limit?) [async — use await], api.callers(name), api.callees(name), api.impact(name, depth?), api.lookup(name, filePath?), api.lookupByFile(filePath), api.functionsByDirectory(dirPath), api.searchComments(query, limit?), api.searchDocs(query, limit?), api.listDomains(), api.listTags(domain?), api.listSystemLayers(), api.indexStatus(). Return your result — it will be JSON-serialized.',
     inputSchema: {
       type: 'object' as const,
       properties: {
-        code: { type: 'string', description: 'TypeScript code to execute. Use the `api` object. Return your result.' },
+        code: { type: 'string', description: 'JavaScript code to execute. Use the `api` object. Return your result.' },
       },
       required: ['code'],
     },
@@ -612,16 +612,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'execute': {
+        await autoSync(db);
+        invalidateCache();
         const code = (args as Record<string, unknown>)?.code;
         if (!code || typeof code !== 'string') {
           return { content: [{ type: 'text', text: 'Error: code parameter is required and must be a string' }] };
         }
         try {
           const result = await executeInSandbox(indexApi, code);
+          const serialized = JSON.stringify(result === undefined ? null : result, null, 2);
           return {
             content: [{
               type: 'text',
-              text: JSON.stringify(result, null, 2),
+              text: serialized,
             }],
           };
         } catch (error) {

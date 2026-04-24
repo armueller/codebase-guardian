@@ -680,7 +680,7 @@ export function buildFirstAttemptPrompt(context: {
       const jsdocIssues = jsdocViolations.get(func.name);
       let jsdocStatus: string;
       if (!func.requiresJSDoc) {
-        jsdocStatus = 'JSDoc: Not required (inline callback — do NOT flag missing JSDoc as a violation)';
+        jsdocStatus = 'JSDoc: Not required for this declaration (do NOT flag missing JSDoc as a violation)';
       } else if (!func.hasJSDoc) {
         jsdocStatus = 'JSDoc: MISSING (confirmed violation)';
       } else if (jsdocIssues && jsdocIssues.length > 0) {
@@ -895,7 +895,7 @@ export function buildRetryPrompt(context: {
       const jsdocIssues = jsdocViolations.get(func.name);
       let jsdocStatus: string;
       if (!func.requiresJSDoc) {
-        jsdocStatus = 'JSDoc: Not required (inline callback — do NOT flag missing JSDoc as a violation)';
+        jsdocStatus = 'JSDoc: Not required for this declaration (do NOT flag missing JSDoc as a violation)';
       } else if (!func.hasJSDoc) {
         jsdocStatus = 'JSDoc: MISSING (confirmed violation)';
       } else if (jsdocIssues && jsdocIssues.length > 0) {

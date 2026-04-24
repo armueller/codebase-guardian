@@ -76,7 +76,7 @@ fi
 
 # ─── Ensure Correct Node Version ─────────────────────────────────────────────
 
-if [ -s "$NVM_DIR/nvm.sh" ]; then
+if [ -n "${NVM_DIR:-}" ] && [ -s "$NVM_DIR/nvm.sh" ]; then
   . "$NVM_DIR/nvm.sh"
   nvm use --silent 2>/dev/null || nvm use --silent 22 2>/dev/null || true
 elif [ -s "$HOME/.nvm/nvm.sh" ]; then
