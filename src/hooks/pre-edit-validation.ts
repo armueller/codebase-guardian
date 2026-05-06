@@ -170,16 +170,15 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
   log(`[TIMING] Read file: ${Date.now() - t1}ms (${fullFileContent.length} chars)`);
 
   // ── Step 1b: Check for syntax errors in post-edit file ──
-  // If the edit creates invalid syntax (e.g., partial function deletion), allow it
-  // rather than flagging issues on broken intermediate code
+  // Track syntax errors but don't bail out — validation should still run on whatever
+  // the AST can parse. The validator will be told about syntax errors so it doesn't
+  // deny based on them alone (multi-step edits are common).
   const syntaxErrors = getSyntaxErrors(fullFileContent);
   if (syntaxErrors.length > 0) {
-    log(`[SYNTAX] Post-edit file has ${syntaxErrors.length} syntax error(s) — allowing edit (intermediate state)`);
+    log(`[SYNTAX] Post-edit file has ${syntaxErrors.length} syntax error(s) — continuing validation (intermediate state)`);
     for (const err of syntaxErrors) {
       log(`  ${err}`);
     }
-    clearCacheForFile(filePath);
-    return { action: 'allow', message: `Edit creates intermediate syntax — allowing (${syntaxErrors.length} syntax error(s) detected)` };
   }
 
   // ── Step 2: Analyze changes (AST-based comparison of pre-edit vs post-edit file) ──
@@ -204,6 +203,11 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
       typeUsage.modified.length === 0 && typeUsage.created.length === 0) {
     if (isNewFile) {
       log('New file creation detected — validating full file');
+    } else if (syntaxErrors.length > 0) {
+      // Parse was too broken to discover any changes — can't validate
+      log('No functions/types detected AND syntax errors present — parse too broken, skipping');
+      clearCacheForFile(filePath);
+      return { action: 'allow', message: `Edit creates intermediate syntax — parse too incomplete for validation (${syntaxErrors.length} syntax error(s))` };
     } else {
       log('No functions or types modified/created — skipping validation');
       clearCacheForFile(filePath);
@@ -403,6 +407,7 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
       isNewFile,
       fullFileContent: isNewFile ? fullFileContent : undefined,
       deletedFunctions: usage.deleted.length > 0 ? usage.deleted : undefined,
+      syntaxErrors: syntaxErrors.length > 0 ? syntaxErrors : undefined,
     });
     log(`[TIMING] Build first-attempt prompt: ${Date.now() - t8}ms (${prompt.length} chars)`);
   }

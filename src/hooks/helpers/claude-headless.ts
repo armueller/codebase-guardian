@@ -671,6 +671,7 @@ export function buildFirstAttemptPrompt(context: {
   isNewFile?: boolean;
   fullFileContent?: string;
   deletedFunctions?: string[];
+  syntaxErrors?: string[];
 }): string {
   const { filePath, extractedFunctions, extractedTypes, propertyAccesses, patternContext, jsdocViolations, typeJsdocViolations } = context;
 
@@ -822,13 +823,18 @@ ${type.fullCode}
     ? propertyAccesses.map(p => `- ${p.object}.${p.property}`).join('\n')
     : '(none detected)';
 
+  // ── Syntax errors section (intermediate multi-step edit) ──
+  const syntaxSection = context.syntaxErrors && context.syntaxErrors.length > 0
+    ? `\n== INTERMEDIATE SYNTAX STATE ==\n\nThis file currently has ${context.syntaxErrors.length} syntax error(s) from an in-progress multi-step edit. Do NOT deny based on syntax issues — the developer is mid-refactor and will fix syntax in subsequent edits. However, still validate everything else: JSDoc completeness/accuracy, DRY, runtime correctness (undefined variables that aren't just syntax artifacts), patterns, and best practices.\n\nSyntax errors:\n${context.syntaxErrors.map(e => `- ${e}`).join('\n')}\n`
+    : '';
+
   // ── New file section ──
   const newFileSection = context.isNewFile && context.fullFileContent
     ? `\n== NEW FILE — FULL CONTENT ==\n\nThis is a NEW FILE being created. Validate the ENTIRE file for code quality:\n- All exported functions MUST have complete JSDoc (non-function constants like React contexts, config objects do NOT require JSDoc)\n- Code must follow directory patterns and project conventions\n- Check for DRY violations against similar existing functions\n- Wrapped/decorated functions (HOCs, middleware wrappers, factory patterns) still require JSDoc on the exported declaration\n\n\`\`\`typescript\n${context.fullFileContent}\n\`\`\`\n`
     : '';
 
-  return `FILE: ${filePath}${context.isNewFile ? ' (NEW FILE)' : ''}
-${newFileSection}${deletedSection}
+  return `FILE: ${filePath}${context.isNewFile ? ' (NEW FILE)' : ''}${context.syntaxErrors && context.syntaxErrors.length > 0 ? ' (INTERMEDIATE SYNTAX — multi-step edit in progress)' : ''}
+${syntaxSection}${newFileSection}${deletedSection}
 == FUNCTIONS BEING EDITED ==
 
 ${functionsSection}
