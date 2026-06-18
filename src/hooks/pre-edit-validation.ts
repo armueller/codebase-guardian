@@ -198,6 +198,9 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
   // Detect new file creation (Write to non-existent file)
   const isNewFile = input.tool_name === 'Write' && !existsSync(filePath);
 
+  // Detect test files — validated with relaxed rules (no JSDoc, but still check correctness + patterns)
+  const isTestFile = /\.(test|spec)\.(ts|js|tsx|jsx)$/.test(filePath);
+
   // If no functions or types modified/created, skip validation
   if (usage.modified.length === 0 && usage.created.length === 0 &&
       typeUsage.modified.length === 0 && typeUsage.created.length === 0) {
@@ -251,57 +254,62 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
   log(`[TIMING] Extract types: ${Date.now() - t3b}ms (${extractedTypes.length} types)`);
 
   // ── Step 4: Local JSDoc validation (fast, no AI) ──
+  // Skipped for test files — tests don't require JSDoc tags
 
   const t4 = Date.now();
   const jsdocViolations = new Map<string, string[]>();
 
-  for (const func of extractedFunctions) {
-    // Skip JSDoc validation for inline callbacks (.map, useMemo, etc.) — they're tracked
-    // for change detection but don't require full JSDoc documentation
-    if (!func.requiresJSDoc) continue;
+  if (!isTestFile) {
+    for (const func of extractedFunctions) {
+      // Skip JSDoc validation for inline callbacks (.map, useMemo, etc.) — they're tracked
+      // for change detection but don't require full JSDoc documentation
+      if (!func.requiresJSDoc) continue;
 
-    if (!func.hasJSDoc) {
-      // Check if JSDoc exists in the file but got separated from the declaration
-      // (e.g., the edit inserted code between the JSDoc and the function)
-      const jsdocMentionsFunc = new RegExp(`@what[\\s\\S]{0,500}?${func.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`);
-      const jsdocExistsButDetached = jsdocMentionsFunc.test(fullFileContent);
+      if (!func.hasJSDoc) {
+        // Check if JSDoc exists in the file but got separated from the declaration
+        // (e.g., the edit inserted code between the JSDoc and the function)
+        const jsdocMentionsFunc = new RegExp(`@what[\\s\\S]{0,500}?${func.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`);
+        const jsdocExistsButDetached = jsdocMentionsFunc.test(fullFileContent);
 
-      if (jsdocExistsButDetached) {
-        jsdocViolations.set(func.name, [
-          `Function '${func.name}' has JSDoc in the file, but the edit SEPARATED the JSDoc from the function declaration. ` +
-          `The JSDoc comment block must be directly above the function — your edit inserted code between them. ` +
-          `Fix: include the JSDoc comment in your old_string so it stays attached to the declaration, or move the insertion point above the JSDoc block.`
-        ]);
-      } else {
-        jsdocViolations.set(func.name, [`Function '${func.name}' is missing JSDoc entirely`]);
-      }
-    } else if (func.jsdocTags) {
-      const issues = validateJSDocCompleteness(func.jsdocTags);
-      if (issues.length > 0) {
-        jsdocViolations.set(func.name, issues.map(issue => `Function '${func.name}': ${issue}`));
+        if (jsdocExistsButDetached) {
+          jsdocViolations.set(func.name, [
+            `Function '${func.name}' has JSDoc in the file, but the edit SEPARATED the JSDoc from the function declaration. ` +
+            `The JSDoc comment block must be directly above the function — your edit inserted code between them. ` +
+            `Fix: include the JSDoc comment in your old_string so it stays attached to the declaration, or move the insertion point above the JSDoc block.`
+          ]);
+        } else {
+          jsdocViolations.set(func.name, [`Function '${func.name}' is missing JSDoc entirely`]);
+        }
+      } else if (func.jsdocTags) {
+        const issues = validateJSDocCompleteness(func.jsdocTags);
+        if (issues.length > 0) {
+          jsdocViolations.set(func.name, issues.map(issue => `Function '${func.name}': ${issue}`));
+        }
       }
     }
   }
   log(`[TIMING] Local JSDoc validation: ${Date.now() - t4}ms`);
-  log(`JSDoc violations: ${jsdocViolations.size > 0 ? Array.from(jsdocViolations.entries()).map(([name, issues]) => `${name}: ${issues.length}`).join(', ') : 'none'}`);
+  log(`JSDoc violations: ${isTestFile ? 'skipped (test file)' : jsdocViolations.size > 0 ? Array.from(jsdocViolations.entries()).map(([name, issues]) => `${name}: ${issues.length}`).join(', ') : 'none'}`);
 
   // ── Step 4b: Local type JSDoc validation ──
 
   const t4b = Date.now();
   const typeJsdocViolations = new Map<string, string[]>();
 
-  for (const type of extractedTypes) {
-    if (!type.hasJSDoc) {
-      typeJsdocViolations.set(type.name, [`${type.kind.charAt(0).toUpperCase() + type.kind.slice(1)} '${type.name}' is missing JSDoc entirely`]);
-    } else if (type.jsdocTags) {
-      const issues = validateTypeJSDocCompleteness(type.jsdocTags);
-      if (issues.length > 0) {
-        typeJsdocViolations.set(type.name, issues.map(issue => `${type.kind.charAt(0).toUpperCase() + type.kind.slice(1)} '${type.name}': ${issue}`));
+  if (!isTestFile) {
+    for (const type of extractedTypes) {
+      if (!type.hasJSDoc) {
+        typeJsdocViolations.set(type.name, [`${type.kind.charAt(0).toUpperCase() + type.kind.slice(1)} '${type.name}' is missing JSDoc entirely`]);
+      } else if (type.jsdocTags) {
+        const issues = validateTypeJSDocCompleteness(type.jsdocTags);
+        if (issues.length > 0) {
+          typeJsdocViolations.set(type.name, issues.map(issue => `${type.kind.charAt(0).toUpperCase() + type.kind.slice(1)} '${type.name}': ${issue}`));
+        }
       }
     }
   }
   log(`[TIMING] Local type JSDoc validation: ${Date.now() - t4b}ms`);
-  log(`Type JSDoc violations: ${typeJsdocViolations.size > 0 ? Array.from(typeJsdocViolations.entries()).map(([name, issues]) => `${name}: ${issues.length}`).join(', ') : 'none'}`);
+  log(`Type JSDoc violations: ${isTestFile ? 'skipped (test file)' : typeJsdocViolations.size > 0 ? Array.from(typeJsdocViolations.entries()).map(([name, issues]) => `${name}: ${issues.length}`).join(', ') : 'none'}`);
 
   // ── Step 5: Check validation cache (exact same edit = skip AI) ──
 
@@ -405,6 +413,7 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
       jsdocViolations,
       typeJsdocViolations,
       isNewFile,
+      isTestFile,
       fullFileContent: isNewFile ? fullFileContent : undefined,
       deletedFunctions: usage.deleted.length > 0 ? usage.deleted : undefined,
       syntaxErrors: syntaxErrors.length > 0 ? syntaxErrors : undefined,
@@ -514,8 +523,8 @@ function shouldSkipValidation(filePath: string): boolean {
     /\.env/,                    // Environment files
     /package\.json$/,           // Package manifest
     /tsconfig\.json$/,          // TypeScript config
-    /\.test\.(ts|js|tsx|jsx)$/, // Test files
-    /\.spec\.(ts|js|tsx|jsx)$/, // Spec files
+    // Test/spec files are validated with relaxed rules (no JSDoc requirements)
+    // but still checked for runtime correctness, pattern consistency, and API validity
     /\.claude\/hooks\//         // Hook files (validation infrastructure)
   ];
 
