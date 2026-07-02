@@ -82,6 +82,18 @@ The hook cannot depend on the MCP server being running.
 
 The hook MUST never permanently block work. Every error path (missing DB, SQLite error, headless Claude timeout, JSON parse failure) must allow the edit and log the error. This is a strict invariant.
 
+### Hook Output Protocol & Exit Discipline
+
+Two non-obvious constraints govern how the PreToolUse hook emits its decision. Both were the cause of denials being **silently discarded** — the hook computed a correct `deny` but the edit was still presented to the user for approval. Do not "simplify" either of these away.
+
+1. **Deny must use `hookSpecificOutput` on stdout, exit 0 — NOT exit code 2 + stderr.** Claude Code 2.1.x classifies an `exit(2)` + stderr-JSON hook as a `hook_non_blocking_error` ("Failed with non-blocking status code") and lets the tool proceed. A blocking deny MUST be printed to **stdout** as:
+   ```json
+   {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"..."}}
+   ```
+   `permissionDecision` is `"allow" | "deny" | "ask"`. See `helpers/hook-output.ts` (`buildPreToolUseDecision`) and its regression test `tests/hook-output.test.ts`.
+
+2. **The hook MUST NOT call `process.exit()` — set `process.exitCode` and let it exit naturally.** Building pattern context loads onnxruntime-node (via the embeddings pipeline) on every function edit. Its native thread pool aborts the process with `mutex lock failed: Invalid argument` (SIGABRT / exit 134) if `process.exit()` forces synchronous teardown while those threads are alive. A non-zero exit is treated as a non-blocking error (see constraint 1's failure mode), so the deny is discarded. Natural exit lets node drain stdout and tear the thread pool down cleanly (onnxruntime threads do not hold the event loop, so there is no hang). Every exit path in `pre-edit-validation.ts` sets `process.exitCode` and returns — see the "Exit Discipline" comment block there.
+
 ### Function Extractor (`function-extractor.ts`)
 
 Uses ts-morph AST parsing to find function declarations and their JSDoc. This handles all declaration patterns: `function foo()`, `const foo = () =>`, `const foo = function foo()`, `React.memo(function foo())`, class methods, object property methods, etc.

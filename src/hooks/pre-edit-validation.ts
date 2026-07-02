@@ -21,6 +21,7 @@ import {
 } from './helpers/code-analyzer.js';
 import { validateJSDocCompleteness, validateTypeJSDocCompleteness } from './helpers/jsdoc-parser.js';
 import { enhanceViolationWithQueryHint } from './helpers/denial-hints.js';
+import { buildPreToolUseDecision } from './helpers/hook-output.js';
 import {
   executeClaudeHeadless,
   buildFirstAttemptPrompt,
@@ -77,7 +78,7 @@ async function main() {
 
     // Only validate Edit/Write operations
     if (!['Edit', 'Write'].includes(hookInput.tool_name)) {
-      allowAndExit('Not an Edit/Write operation');
+      return allowAndExit('Not an Edit/Write operation');
     }
 
     const filePath = hookInput.tool_input.file_path || '';
@@ -90,22 +91,22 @@ async function main() {
 
     // Skip validation for certain file types
     if (shouldSkipValidation(filePath)) {
-      allowAndExit(`Skipping validation for ${filePath}`);
+      return allowAndExit(`Skipping validation for ${filePath}`);
     }
 
     // Check if code index is available — fail open if not
     if (!isIndexAvailable()) {
       log('Code index database not available — allowing edit (fail-open)');
-      allowAndExit('Code index unavailable (fail-open)');
+      return allowAndExit('Code index unavailable (fail-open)');
     }
 
     // Perform validation
     const result = await validateEdit(hookInput);
 
     if (result.action === 'allow') {
-      allowAndExit(result.message || 'Validation passed', result.suggestions);
+      return allowAndExit(result.message || 'Validation passed', result.suggestions);
     } else {
-      denyAndExit(result.message || 'Validation failed', result.violations, result.suggestions);
+      return denyAndExit(result.message || 'Validation failed', result.violations, result.suggestions);
     }
   } catch (error) {
     // On error, fail open (allow edit) but log the error
@@ -121,7 +122,7 @@ async function main() {
         message: `Hook validation error (allowing edit): ${errorMsg}`
       })
     );
-    process.exit(0);
+    process.exitCode = 0;
   }
 }
 
@@ -594,20 +595,32 @@ function log(message: string): void {
   }
 }
 
+// ─── Exit Discipline ─────────────────────────────────────────────────────────
+//
+// These helpers set `process.exitCode` and RETURN — they must NEVER call
+// `process.exit()`. Building pattern context loads onnxruntime-node (via the
+// embeddings pipeline), whose native thread pool aborts the process with
+// "mutex lock failed: Invalid argument" if `process.exit()` forces synchronous
+// teardown while those threads are alive. The abort yields a non-zero exit,
+// which Claude Code classifies as a non-blocking hook error — silently
+// discarding the deny. Natural exit lets node drain stdout and tear the thread
+// pool down cleanly (exit 0). Every caller in main() must `return` after these.
+
 /**
- * @what Exits with allow decision and optional message
- * @how Outputs JSON to stdout and exits with code 0
- * @why Cleanly allows edit and exits hook process
+ * @what Emits an allow decision and lets the hook exit naturally
+ * @how Writes the allow JSON to stdout and sets process.exitCode = 0 (no process.exit — see Exit Discipline above)
+ * @why Allowing the edit must not force process.exit(), which aborts on onnxruntime thread teardown
  *
  * @param {string} message Optional success message
- * @returns {never}
+ * @param {string[]} suggestions Optional non-blocking suggestions
+ * @returns {void}
  *
- * @sideeffects Outputs to stdout, exits process
+ * @sideeffects Writes to stdout, sets process.exitCode
  * @systemlayer Exit Handler
- * @domain hook-response, process-exit
- * @tags exit-handler, allow-decision, stdout-output, process-termination, success-path
+ * @domain hook-response, natural-exit
+ * @tags exit-handler, allow-decision, stdout-output, natural-exit, success-path
  */
-function allowAndExit(message?: string, suggestions?: string[]): never {
+function allowAndExit(message?: string, suggestions?: string[]): void {
   log(`ALLOW: ${message || 'Edit allowed'}`);
   const response: Record<string, unknown> = { action: 'allow', message };
   if (suggestions && suggestions.length > 0) {
@@ -615,24 +628,25 @@ function allowAndExit(message?: string, suggestions?: string[]): never {
     log(`  Suggestions returned to caller: ${suggestions.length}`);
   }
   console.log(JSON.stringify(response));
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 /**
- * @what Exits with deny decision, message, and violations
- * @how Outputs JSON to stderr and exits with code 2
- * @why Blocks edit and provides detailed feedback about code quality violations
+ * @what Emits a blocking deny decision and lets the hook exit naturally
+ * @how Writes the PreToolUse deny envelope to stdout and sets process.exitCode = 0 (no process.exit — see Exit Discipline above)
+ * @why Blocks the edit with detailed feedback; must not process.exit(), which aborts on onnxruntime thread teardown
  *
  * @param {string} message Error message
  * @param {string[]} violations Specific violation list
- * @returns {never}
+ * @param {string[]} suggestions Optional non-blocking suggestions
+ * @returns {void}
  *
- * @sideeffects Outputs to stderr, exits process with code 2
+ * @sideeffects Writes the deny decision to stdout, sets process.exitCode
  * @systemlayer Exit Handler
- * @domain hook-response, process-exit
- * @tags exit-handler, deny-decision, stderr-output, process-termination, block-edit
+ * @domain hook-response, natural-exit
+ * @tags exit-handler, deny-decision, stdout-output, natural-exit, block-edit
  */
-function denyAndExit(message: string, violations?: string[], suggestions?: string[]): never {
+function denyAndExit(message: string, violations?: string[], suggestions?: string[]): void {
   log(`DENY: ${message}`);
   if (violations) {
     log(`Violations:\n${violations.join('\n')}`);
@@ -642,9 +656,12 @@ function denyAndExit(message: string, violations?: string[], suggestions?: strin
   if (suggestions && suggestions.length > 0) {
     reason += `\n\nSuggestions:\n${suggestions.map(s => `- ${s}`).join('\n')}`;
   }
-  // Output deny decision on stderr with exit code 2 (Claude Code hook protocol)
-  console.error(JSON.stringify({ permissionDecision: 'deny' as const, reason }));
-  process.exit(2);
+  // Block via the PreToolUse decision protocol: JSON on STDOUT, exit 0.
+  // The legacy exit-2 + stderr `{permissionDecision}` convention is classified
+  // as a non-blocking error (hook_non_blocking_error) by Claude Code 2.1.x, so
+  // the deny never actually blocked the edit — this envelope is what the harness honors.
+  console.log(JSON.stringify(buildPreToolUseDecision('deny', reason)));
+  process.exitCode = 0;
 }
 
 // Run the hook
@@ -652,5 +669,5 @@ main().catch(error => {
   log(`Fatal error: ${error}`);
   // Fail open on fatal errors
   console.log(JSON.stringify({ action: 'allow', message: 'Hook fatal error (allowing edit)' }));
-  process.exit(0);
+  process.exitCode = 0;
 });
