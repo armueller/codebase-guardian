@@ -10,6 +10,7 @@ import { openDatabase, clearAllData } from './db.js';
 import { buildIndex, clearDirtyFiles } from './indexer.js';
 import { buildCallGraph } from './call-graph.js';
 import { invalidateCache } from './embeddings.js';
+import { clearValidationArtifacts } from './validation-artifacts.js';
 import { resolveConfig, ensureDirectories, registerProject } from '../config.js';
 
 const config = resolveConfig();
@@ -59,6 +60,14 @@ async function main(): Promise<void> {
   // Clear dirty files
   clearDirtyFiles(DIRTY_FILES_PATH);
   invalidateCache();
+
+  // Bust the hook's validation cache + session store — their verdicts were
+  // computed against the pre-rebuild index and would otherwise serve stale
+  // false positives (e.g. a phantom DRY duplicate from the old snapshot).
+  const clearedArtifacts = clearValidationArtifacts(DB_PATH);
+  if (clearedArtifacts.length > 0) {
+    console.log(`Cleared stale validation artifacts: ${clearedArtifacts.join(', ')}`);
+  }
 
   const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`=== Build complete in ${totalTime}s ===`);

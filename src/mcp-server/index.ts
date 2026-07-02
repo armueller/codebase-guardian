@@ -25,6 +25,7 @@ import {
   type SearchFilters,
 } from './db.js';
 import { semanticSearch, invalidateCache } from './embeddings.js';
+import { clearValidationArtifacts } from './validation-artifacts.js';
 import { buildIndex, readDirtyFiles, clearDirtyFiles } from './indexer.js';
 import { buildCallGraph } from './call-graph.js';
 import { createIndexAPI } from '../shared/index-api.js';
@@ -445,6 +446,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const graphStats = await buildCallGraph(db, REPO_ROOT);
         invalidateCache();
 
+        // Bust the hook's validation cache + session store so stale verdicts
+        // from the pre-rebuild index (e.g. a phantom DRY duplicate) aren't
+        // re-served after the rebuild that was meant to fix them.
+        const clearedArtifacts = clearValidationArtifacts(DB_PATH);
+
         return {
           content: [{
             type: 'text',
@@ -460,6 +466,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               `**Call edges:** ${graphStats.edgesCreated}`,
               `**Inline comments:** ${indexStats.commentsExtracted}`,
               `**Doc sections:** ${indexStats.docSectionsCreated}`,
+              `**Validation cache:** ${clearedArtifacts.length > 0 ? `cleared (${clearedArtifacts.join(', ')})` : 'already clear'}`,
             ].join('\n'),
           }],
         };
