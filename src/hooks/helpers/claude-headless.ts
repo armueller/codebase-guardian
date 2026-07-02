@@ -94,6 +94,16 @@ DRY violations should include:
 - The name and location of the existing function that already does this
 - A specific recommendation: "Use existingFunction() from path/to/file.ts instead"
 
+### 1b. Index Staleness — Guard Against DRY False Positives
+
+The code index is a snapshot and can lag the working tree — most often right after a git merge, rebase, branch switch, or bulk refactor. The classic symptom is a **DRY "duplicate" false positive**: a "SIMILAR EXISTING FUNCTION" that looks byte-for-byte identical to the function being edited, but is actually a stale copy of the SAME function — e.g. the "duplicate" is reported in the EXACT file being edited, or its indexed body matches the pre-edit code rather than any genuinely separate function.
+
+Before denying on a DRY duplicate, sanity-check: could the "existing" function be a stale or self-match of the one under edit rather than a distinct function? If you deny (or are meaningfully uncertain) on a DRY or pattern violation that could rest on stale index data, append this reminder as the LAST entry in your \`violations\` array:
+
+"If this looks wrong, the code index may be stale (common right after a merge or branch switch). Rebuild it with the codebase-guardian \`rebuild_index\` MCP tool (or \`npm run build-index\`) and retry — a stale index can report a function that no longer exists, or the file's own pre-edit copy, as a duplicate."
+
+Only add this note when index staleness is genuinely plausible. Do NOT append it to every deny.
+
 ### 2. JSDoc Completeness (CRITICAL)
 
 The code index depends entirely on JSDoc for searchability. Every function MUST have complete JSDoc with ALL of these tags:
