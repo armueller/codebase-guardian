@@ -82,6 +82,8 @@ The hook cannot depend on the MCP server being running.
 
 The hook MUST never permanently block work. Every error path (missing DB, SQLite error, headless Claude timeout, JSON parse failure) must allow the edit and log the error. This is a strict invariant.
 
+**Circuit breaker (`helpers/circuit-breaker.ts`).** Now that denials actually block the tool call (see "Hook Output Protocol & Exit Discipline"), an imperfect/strict validator — or a legitimate multi-step refactor that passes through messy intermediate states — could otherwise trap the agent in an endless deny→revise→deny loop. That would violate the "never permanently block" invariant. So after `MAX_CONSECUTIVE_DENIALS` (3) consecutive denials of the same file in a session, the hook stands down: it allows the edit and surfaces the still-unresolved concerns as a loud warning + suggestion. This relies on the session-store invariant that denied edits never land on disk (so `attemptCount` accumulates across retries of the same denied edit); once released, the session is cleared. The check sits before the identical-resubmission short-circuit so the agent is freed even if it resubmits the same code.
+
 ### Hook Output Protocol & Exit Discipline
 
 Two non-obvious constraints govern how the PreToolUse hook emits its decision. Both were the cause of denials being **silently discarded** — the hook computed a correct `deny` but the edit was still presented to the user for approval. Do not "simplify" either of these away.

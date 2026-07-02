@@ -40,6 +40,7 @@ import {
   clearCacheForFile
 } from './helpers/validation-cache.js';
 import { getSession, setDenialInfo, clearSession as clearSessionEntry } from './helpers/validation-sessions.js';
+import { shouldStandDown } from './helpers/circuit-breaker.js';
 import crypto from 'crypto';
 import { resolveConfig, ensureDirectories } from '../config.js';
 
@@ -357,6 +358,27 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
 
   const isRetry = existingSession !== null;
   log(`[SESSION] ${isRetry ? `Retry attempt #${existingSession!.attemptCount + 1} (session: ${existingSession!.headlessSessionId})` : 'First attempt'}`);
+
+  // ── Circuit breaker: uphold "never permanently block work" ──
+  // Now that denials actually block the tool call, an imperfect/strict validator
+  // — or a legitimate multi-step refactor that passes through messy intermediate
+  // states — can trap the agent in an endless deny→revise→deny loop. After
+  // MAX_CONSECUTIVE_DENIALS blocked attempts on the same file in a session, stand
+  // down: allow the edit and surface the still-unresolved concerns as a loud
+  // warning. Placed BEFORE the identical-resubmission check so the agent is
+  // released even if it resubmits the same code.
+  if (isRetry && shouldStandDown(existingSession!.attemptCount)) {
+    const priorReason = existingSession!.lastDeniedReason || 'see the previous validation output';
+    log(`[SESSION] Circuit breaker: ${existingSession!.attemptCount} consecutive denials — standing down to avoid a permanent block`);
+    clearSessionEntry(sessionKey);
+    return {
+      action: 'allow',
+      message: `⚠️ Code Quality is standing down after ${existingSession!.attemptCount} blocked attempts to avoid trapping this edit. The edit is being ALLOWED, but the last review's concerns were NOT resolved — please address them in a follow-up: ${priorReason}`,
+      suggestions: [
+        `The guardian blocked this edit ${existingSession!.attemptCount}× without the issues being resolved and is now allowing it through so work is not permanently blocked. Unresolved concerns: ${priorReason}`
+      ]
+    };
+  }
 
   // Check for identical resubmission on retry — return cached denial without invoking headless Claude
   // Compares proposed content hash (what the edit would produce) against last denied proposed hash
