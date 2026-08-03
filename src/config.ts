@@ -81,7 +81,12 @@ const DEFAULT_JSDOC = {
  * Creates it if it doesn't exist.
  */
 export function getGuardianHome(): string {
-  const home = process.env.GUARDIAN_HOME || path.join(os.homedir(), '.codebase-guardian');
+  // Explicit override wins; then the plugin's persistent data dir when running
+  // as a Claude Code plugin (indexes/logs live there, cleaned up on uninstall);
+  // else the legacy standalone location.
+  const home = process.env.GUARDIAN_HOME
+    || process.env.CLAUDE_PLUGIN_DATA
+    || path.join(os.homedir(), '.codebase-guardian');
   return home;
 }
 

@@ -40,20 +40,28 @@ function log(message: string): void {
  * Returns the path to the config file, or null if the server source isn't available.
  */
 function getMcpConfigPath(): string | null {
-  const guardianHome = path.join(os.homedir(), '.codebase-guardian');
-  const serverEntry = path.join(guardianHome, 'source', 'dist', 'mcp-server', 'index.js');
+  // Where to write the temp MCP config for the headless validator.
+  const home = process.env.CLAUDE_PLUGIN_DATA
+    || process.env.GUARDIAN_HOME
+    || path.join(os.homedir(), '.codebase-guardian');
 
-  if (!existsSync(serverEntry)) return null;
+  let serverConfig: { command: string; args: string[] };
+  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+  if (pluginRoot) {
+    // Plugin mode: reuse the MCP launcher wrapper — it resolves Node and points
+    // at the built server under ${CLAUDE_PLUGIN_DATA}/app.
+    const runMcp = path.join(pluginRoot, 'scripts', 'run-mcp.sh');
+    if (!existsSync(runMcp)) return null;
+    serverConfig = { command: 'bash', args: [runMcp] };
+  } else {
+    // Standalone mode (legacy shell install).
+    const serverEntry = path.join(home, 'source', 'dist', 'mcp-server', 'index.js');
+    if (!existsSync(serverEntry)) return null;
+    serverConfig = { command: 'node', args: [serverEntry] };
+  }
 
-  const configPath = path.join(guardianHome, '.headless-mcp-config.json');
-  const config = {
-    mcpServers: {
-      'codebase-guardian': {
-        command: 'node',
-        args: [serverEntry],
-      },
-    },
-  };
+  const configPath = path.join(home, '.headless-mcp-config.json');
+  const config = { mcpServers: { 'codebase-guardian': serverConfig } };
 
   try {
     writeFileSync(configPath, JSON.stringify(config));

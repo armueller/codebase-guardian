@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/mcp-server/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-assets.mjs",
     "dev": "tsc --watch",
     "start": "node dist/mcp-server/index.js",
     "build-index": "node dist/mcp-server/build-index.js",

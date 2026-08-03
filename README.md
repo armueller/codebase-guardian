@@ -57,40 +57,40 @@ Codebase Guardian solves this by **validating every edit at write-time**, before
 
 ## Installation
 
+Codebase Guardian is a **Claude Code plugin**, installed from its self-hosted marketplace.
+
 ### Prerequisites
 
-- **Node.js >= 18** (for the MCP server and build tooling)
-- **Claude Code CLI** (`claude` command available in PATH)
-- **jq** (optional but recommended — used to merge hook config into `settings.json`)
+- **Node.js >= 18** on your `PATH` (the plugin builds its native engine on first use)
+- **A C/C++ build toolchain** to compile `better-sqlite3`: Xcode Command Line Tools on macOS (`xcode-select --install`), or `build-essential` + `python3` on Linux
+- **Claude Code**
 
 ### Install
 
-```bash
-git clone https://github.com/armueller/codebase-guardian.git
-cd codebase-guardian
-./install.sh
+In Claude Code:
+
+```
+/plugin marketplace add armueller/codebase-guardian
+/plugin install codebase-guardian@codebase-guardian
 ```
 
-The install script does the following:
+On the **first session after install**, the plugin builds its engine in the background: it installs ~550MB of native dependencies (`onnxruntime`, `better-sqlite3`) and compiles TypeScript into the plugin's data directory. This takes a few minutes and happens only once (and again after an update that changes dependencies). **Until it finishes, edits are allowed through unvalidated** — validation and the MCP tools activate automatically once the build completes.
 
-1. Creates `~/.codebase-guardian/` with subdirectories for indexes and logs
-2. Copies the source to `~/.codebase-guardian/source/`
-3. Runs `npm install` and `npm run build` (compiles TypeScript)
-4. Registers a **user-level MCP server** (`codebase-guardian`) via `claude mcp add --scope user`
-5. Registers a **user-level PreToolUse hook** for `Edit|Write` operations in `~/.claude/settings.json`
-6. Installs skills (`/audit`, `/hook-audit`, `/review-suggestions`) to `~/.claude/skills/`
-7. Records the version in `~/.codebase-guardian/.version`
+After that, the guardian is active on **every project** you open in Claude Code. No per-project setup needed. Skills are available as `/codebase-guardian:audit`, `/codebase-guardian:hook-audit`, and `/codebase-guardian:review-suggestions`.
 
-After install, the guardian is active on **every project** you open in Claude Code. No per-project setup needed.
+### Update
+
+```
+/plugin update codebase-guardian@codebase-guardian
+```
 
 ### Uninstall
 
-```bash
-cd /path/to/codebase-guardian
-./install.sh --uninstall
+```
+/plugin uninstall codebase-guardian@codebase-guardian
 ```
 
-This removes the MCP server registration, the PreToolUse hook from settings.json, and the installed skills. It will ask before deleting `~/.codebase-guardian/` (which contains per-project indexes).
+This removes the plugin, its hook, and its MCP server, along with the plugin's data directory (indexes, logs, built engine). Pass `--keep-data` to preserve it.
 
 ## Getting Started
 
@@ -102,12 +102,7 @@ Open any TypeScript project in Claude Code and use the MCP tool:
 Use the rebuild_index tool to build the code index
 ```
 
-Or from the command line:
-
-```bash
-cd /your/project
-node ~/.codebase-guardian/source/dist/mcp-server/build-index.js
-```
+The index also rebuilds automatically as you edit, and can be rebuilt any time by asking Claude to run the `rebuild_index` MCP tool (useful after a git merge or branch switch, which can leave the index stale).
 
 The index scans your source files and documentation in two phases:
 

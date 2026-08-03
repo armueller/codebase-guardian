@@ -1,0 +1,14 @@
+{
+  "name": "codebase-guardian",
+  "owner": { "name": "Austin Mueller", "url": "https://github.com/armueller" },
+  "description": "Codebase Guardian — a semantic code index and automated edit-validation plugin for Claude Code.",
+  "plugins": [
+    {
+      "name": "codebase-guardian",
+      "source": "./",
+      "description": "Semantic code index + automated edit-validation hooks for TypeScript codebases (DRY, JSDoc, pattern consistency).",
+      "category": "code-quality",
+      "tags": ["code-quality", "dry", "jsdoc", "validation", "typescript"]
+    }
+  ]
+}

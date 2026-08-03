@@ -10,7 +10,7 @@ Install dependencies locally first:
 npm install --ignore-scripts && npm rebuild better-sqlite3
 ```
 
-`--ignore-scripts` is required because `sharp` (transitive dep from `@huggingface/transformers`) fails to build natively. `better-sqlite3` needs its native addon rebuilt separately. Both `install.sh` and `update.sh` use this same approach — if you change one, change both.
+`--ignore-scripts` is required because `sharp` (transitive dep from `@huggingface/transformers`) fails to build natively. `better-sqlite3` needs its native addon rebuilt separately. The plugin bootstrap (`scripts/build.sh`) uses this same approach — keep them consistent.
 
 ## Running Tests
 
@@ -22,19 +22,24 @@ npm run test:hooks          # Hook helper tests only
 
 Tests use Node's built-in `--test` runner via `tsx`. No jest, no mocha. Always run tests from the repo, not from the installed directory.
 
-## Deploying Changes
+## Deploying / Testing Changes
 
-After code changes are tested, deploy to the installed location:
+Codebase Guardian ships as a **Claude Code plugin** (see `.claude-plugin/`, `hooks/`, `.mcp.json`, `scripts/`). The hook and MCP server run from the plugin's **built copy** under `${CLAUDE_PLUGIN_DATA}/app` — NOT from this repo, and no longer from `~/.codebase-guardian/source`.
 
-```bash
-./update.sh
+**How the engine gets built:** the `SessionStart` hook (`scripts/bootstrap.sh` → `scripts/build.sh`) copies the plugin source into `${CLAUDE_PLUGIN_DATA}/app`, runs `npm install` + `npm rebuild better-sqlite3` + `npm run build`, and stamps success. It runs once on first use (in the background) and re-runs only when `package.json` changes. `dist/` and `node_modules/` are NOT committed.
+
+**Local dev loop** (test the plugin without publishing):
+
+```
+/plugin marketplace add /absolute/path/to/codebase-guardian
+/plugin install codebase-guardian@codebase-guardian
 ```
 
-This syncs source to `~/.codebase-guardian/source/`, installs deps, builds TypeScript, and updates skills. The hook and MCP server run from the installed copy, not this repo directly. **Code changes are not live until update.sh runs.**
+To force a rebuild after source changes: bump `package.json` (or delete `${CLAUDE_PLUGIN_DATA}/.build-stamp`) and start a new session. To iterate on the compiled hook directly, `npm run build` in the repo (which now also runs `scripts/copy-assets.mjs` to copy `.cjs` boundary files into `dist/` — the compiled hook needs them).
 
-Do NOT try to manually rsync files, find tsc, or compile individually. `update.sh` handles everything.
+**Publishing:** bump `version` in `.claude-plugin/plugin.json`, commit, push, tag. Users get it via `/plugin update`.
 
-Note: CLAUDE.md changes do NOT require `update.sh` — Claude Code reads CLAUDE.md from the repo directly.
+Note: CLAUDE.md changes are read from the repo directly and don't require a rebuild.
 
 ## Project Structure
 
