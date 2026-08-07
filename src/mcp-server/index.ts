@@ -343,7 +343,7 @@ function formatFunctionResult(func: FunctionResult, score?: number): string {
 // ─── MCP Server ─────────────────────────────────────────────────────────────
 
 const server = new Server(
-  { name: 'codebase-guardian', version: '0.1.0' },
+  { name: 'codebase-guardian', version: '0.3.0' },
   { capabilities: { tools: {} } }
 );
 

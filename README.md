@@ -63,6 +63,7 @@ Codebase Guardian is a **Claude Code plugin**, installed from its self-hosted ma
 
 - **Node.js >= 18** on your `PATH` (the plugin builds its native engine on first use)
 - **A C/C++ build toolchain** to compile `better-sqlite3`: Xcode Command Line Tools on macOS (`xcode-select --install`), or `build-essential` + `python3` on Linux
+- **macOS or Linux** — the first-run bootstrap is a bash script; on Windows, run under WSL
 - **Claude Code**
 
 ### Install
@@ -352,7 +353,7 @@ All fields are optional. Without a config file, Guardian auto-detects:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `GUARDIAN_PROJECT_ROOT` | Override project root detection | Auto-detected from git |
-| `GUARDIAN_HOME` | Override install directory | `~/.codebase-guardian/` |
+| `GUARDIAN_HOME` | Override the data directory (indexes/logs) | Plugin data dir (`${CLAUDE_PLUGIN_DATA}`) when installed as a plugin, else `~/.codebase-guardian/` |
 
 ## Multi-Project Support
 
@@ -371,19 +372,11 @@ Guardian automatically detects which project you're working in and uses a separa
 
 ## Updating
 
-```bash
-cd /path/to/codebase-guardian
-git pull
-./update.sh
+```
+/plugin update codebase-guardian@codebase-guardian
 ```
 
-The update script:
-
-1. Pulls latest changes (if in a git repo)
-2. Syncs source files to `~/.codebase-guardian/source/`
-3. Reinstalls dependencies and rebuilds TypeScript
-4. Updates skills in `~/.claude/skills/`
-5. Preserves all per-project indexes, logs, and data
+Claude Code pulls the latest version. If the update changes dependencies (`package.json`), the plugin's `SessionStart` bootstrap rebuilds the engine automatically on the next session. Per-project indexes and logs are preserved.
 
 ## Architecture
 

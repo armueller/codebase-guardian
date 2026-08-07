@@ -6,6 +6,7 @@
   "author": { "name": "Austin Mueller", "url": "https://github.com/armueller" },
   "homepage": "https://github.com/armueller/codebase-guardian",
   "repository": "https://github.com/armueller/codebase-guardian",
+  "license": "MIT",
   "keywords": ["code-quality", "dry", "jsdoc", "validation", "semantic-search", "typescript", "code-index", "pretooluse"],
   "hooks": "./hooks/hooks.json",
   "mcpServers": "./.mcp.json"
