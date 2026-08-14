@@ -69,6 +69,16 @@ const SYSTEM_PROMPT = `You are a code quality enforcement agent for a TypeScript
 
 Your response must be ONLY a JSON object — no markdown, no explanation text, no code blocks. Just the raw JSON.
 
+## Change Scope — Judge ONLY What This Edit Changed
+
+You are shown the full body of each edited function for CONTEXT, but a large function is often only PARTIALLY changed by an edit. The "WHAT THIS EDIT ACTUALLY CHANGED" section shows the exact lines this edit added/removed.
+
+**Raise violations ONLY for code this edit added or changed.** Pre-existing, unchanged code — including nested functions, hooks, helpers, or blocks that appear inside an edited function's body but are NOT in the "WHAT THIS EDIT ACTUALLY CHANGED" section — is CONTEXT ONLY. Never flag it (no DRY, no best-practice, no inline-comment quality, no "extract this helper"). It shipped previously and is not part of this edit; blocking it forces the developer to refactor code they did not touch.
+
+In scope: (a) the added/changed lines themselves; (b) a genuinely NEW function or type (all its lines are added); (c) a MODIFIED function whose OWN JSDoc is now inaccurate BECAUSE of this change, or whose signature/behavior changed (and its caller blast radius). Out of scope: pre-existing issues in unchanged code, however tempting.
+
+If the only problems you can find live in unchanged code, the decision is "allow". You may still surface an unchanged-code concern as a non-blocking suggestion, but it must NOT be a violation.
+
 ## Code Quality Principles (in order of importance)
 
 ### 1. DRY — Don't Repeat Yourself (PRIMARY)
@@ -683,6 +693,7 @@ export function buildFirstAttemptPrompt(context: {
   fullFileContent?: string;
   deletedFunctions?: string[];
   syntaxErrors?: string[];
+  editScope?: string;
 }): string {
   const { filePath, extractedFunctions, extractedTypes, propertyAccesses, patternContext, jsdocViolations, typeJsdocViolations } = context;
 
@@ -860,7 +871,7 @@ The following rules STILL APPLY with full rigor:
     : '';
 
   return `FILE: ${filePath}${context.isTestFile ? ' (TEST FILE)' : ''}${context.isNewFile ? ' (NEW FILE)' : ''}${context.syntaxErrors && context.syntaxErrors.length > 0 ? ' (INTERMEDIATE SYNTAX — multi-step edit in progress)' : ''}
-${testFileSection}${syntaxSection}${newFileSection}${deletedSection}
+${testFileSection}${syntaxSection}${newFileSection}${deletedSection}${context.editScope ? `\n== WHAT THIS EDIT ACTUALLY CHANGED (judge ONLY this — see "Change Scope" in your instructions) ==\n\n${context.editScope}\n` : ''}
 == FUNCTIONS BEING EDITED ==
 
 ${functionsSection}
@@ -902,16 +913,16 @@ Validate this edit against the code quality rules in your system prompt and retu
 
 /**
  * @what Builds the retry prompt for a resumed headless Claude session
- * @how Includes only the updated edit code and any JSDoc issues — the resumed session already has full context
- * @why On resume, Claude already has the system prompt, code index context, and its previous analysis. We just send what changed.
+ * @how Renders three sections — updated functions (with JSDoc status), any updated types/interfaces, and a conditional change-scope block from editScope — while the resumed session reuses the system prompt and code index context from the first attempt
+ * @why On resume, Claude already has the system prompt, code index context, and its previous analysis, so we resend only what changed — including the change-scope guardrail so the resumed session also judges only edited lines, not unchanged surrounding code
  *
  * @param {object} context Updated edit context for the retry
  * @returns {string} Compact retry prompt
  *
  * @sideeffects None
  * @systemlayer Prompt Engineering
- * @domain prompt-building, retry-prompt, session-resume
- * @tags prompt-engineering, retry, compact-prompt, session-continuity, updated-edit
+ * @domain prompt-building, retry-prompt, session-resume, change-scope
+ * @tags prompt-engineering, retry, compact-prompt, session-continuity, edit-scope
  */
 export function buildRetryPrompt(context: {
   filePath: string;
@@ -919,8 +930,9 @@ export function buildRetryPrompt(context: {
   extractedTypes: ExtractedType[];
   jsdocViolations: Map<string, string[]>;
   typeJsdocViolations: Map<string, string[]>;
+  editScope?: string;
 }): string {
-  const { filePath, extractedFunctions, extractedTypes, jsdocViolations, typeJsdocViolations } = context;
+  const { filePath, extractedFunctions, extractedTypes, jsdocViolations, typeJsdocViolations, editScope } = context;
 
   const functionsSection = extractedFunctions
     .map(func => {
@@ -980,6 +992,6 @@ The developer has revised the edit based on your previous feedback. Check whethe
 == UPDATED FUNCTIONS ==
 
 ${functionsSection}
-${typesSection ? `\n== UPDATED TYPES/INTERFACES ==\n\n${typesSection}\n` : ''}
+${typesSection ? `\n== UPDATED TYPES/INTERFACES ==\n\n${typesSection}\n` : ''}${editScope ? `\n== WHAT THIS EDIT ACTUALLY CHANGED (judge ONLY this — see "Change Scope" in your instructions) ==\n\n${editScope}\n` : ''}
 Re-validate and return the JSON result. Be explicit about which previous violations were addressed and which remain.`;
 }

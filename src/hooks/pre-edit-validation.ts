@@ -27,6 +27,7 @@ import {
   buildFirstAttemptPrompt,
   buildRetryPrompt
 } from './helpers/claude-headless.js';
+import { describeEditScope } from './helpers/edit-scope.js';
 import {
   buildPatternContext,
   isIndexAvailable,
@@ -396,6 +397,10 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
 
   // ── Step 8: Build prompt ──
 
+  // Ground the validator in exactly what this edit changed, so it doesn't flag
+  // unchanged nested code in a partially-edited large function (see edit-scope.ts).
+  const editScope = describeEditScope({ isNewFile, oldString, newString, currentFileOnDisk, newContent: fullFileContent });
+
   let prompt: string;
 
   if (isRetry) {
@@ -406,7 +411,8 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
       extractedFunctions,
       extractedTypes,
       jsdocViolations,
-      typeJsdocViolations
+      typeJsdocViolations,
+      editScope
     });
     log(`[TIMING] Build retry prompt: ${Date.now() - t7}ms (${prompt.length} chars)`);
   } else {
@@ -440,6 +446,7 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
       fullFileContent: isNewFile ? fullFileContent : undefined,
       deletedFunctions: usage.deleted.length > 0 ? usage.deleted : undefined,
       syntaxErrors: syntaxErrors.length > 0 ? syntaxErrors : undefined,
+      editScope,
     });
     log(`[TIMING] Build first-attempt prompt: ${Date.now() - t8}ms (${prompt.length} chars)`);
   }
