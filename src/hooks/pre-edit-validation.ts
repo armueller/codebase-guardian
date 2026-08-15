@@ -41,6 +41,7 @@ import {
 } from './helpers/validation-cache.js';
 import { getSession, setDenialInfo, clearSession as clearSessionEntry } from './helpers/validation-sessions.js';
 import { shouldStandDown } from './helpers/circuit-breaker.js';
+import { shouldSkipValidation } from './helpers/skip-validation.js';
 import crypto from 'crypto';
 import { resolveConfig, ensureDirectories } from '../config.js';
 
@@ -521,37 +522,6 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
     clearCacheForFile(filePath);
     return { action: 'allow', message: `Validation error (allowing edit): ${errorMsg}` };
   }
-}
-
-/**
- * @what Determines if a file should skip validation
- * @how Checks file path against patterns for docs, configs, tests, hooks, etc.
- * @why Some files don't need code quality validation (documentation, config, tests, infrastructure)
- *
- * @param {string} filePath Absolute path to file
- * @returns {boolean} True if validation should be skipped
- *
- * @sideeffects None
- * @systemlayer Filtering
- * @domain file-filtering, validation-exemption
- * @tags filtering, exemptions, skip-patterns, performance-optimization, smart-filtering
- */
-function shouldSkipValidation(filePath: string): boolean {
-  const skipPatterns = [
-    /\.md$/,                    // Markdown files
-    /\.txt$/,                   // Text files
-    /\.json$/,                  // JSON files
-    /\.gitignore$/,             // Git ignore
-    /CLAUDE\.local/,            // Local Claude config
-    /\.env/,                    // Environment files
-    /package\.json$/,           // Package manifest
-    /tsconfig\.json$/,          // TypeScript config
-    // Test/spec files are validated with relaxed rules (no JSDoc requirements)
-    // but still checked for runtime correctness, pattern consistency, and API validity
-    /\.claude\/hooks\//         // Hook files (validation infrastructure)
-  ];
-
-  return skipPatterns.some(pattern => pattern.test(filePath));
 }
 
 /**
