@@ -9,7 +9,7 @@ import re
 # A docstring line may carry more than one label, e.g. "Domain: x. Tags: y."
 # Case-insensitive on the label; values keep original case until normalized below.
 # Each value runs up to the next period (labels are period-terminated by convention).
-_INLINE_RE = re.compile(r"(?i)(Domain|Tags|Layer)\s*:\s*([^.]+)")
+_INLINE_RE = re.compile(r"(?i)\b(Domain|Tags|Layer)\s*:\s*([^.]+)")
 
 
 def _split(value: str, *, lower: bool) -> list[str]:

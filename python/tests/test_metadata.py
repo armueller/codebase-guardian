@@ -26,3 +26,9 @@ def test_none_and_empty_are_safe():
         "tags": [],
         "layer": None,
     }
+
+
+def test_prose_with_compound_word_is_not_metadata():
+    # "DataLayer:" must not match — the \b anchor prevents prose false-positives.
+    meta = parse_doc_metadata("Uses the DataLayer: storage tier for caching.")
+    assert meta == {"domains": [], "tags": [], "layer": None}
