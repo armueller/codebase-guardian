@@ -29,3 +29,20 @@ def test_syntax_error_still_exit_zero():
     assert proc.returncode == 0
     payload = json.loads(proc.stdout)
     assert payload["error"] == "syntax"
+
+
+def test_nonexistent_path_still_exit_zero():
+    proc = _run("extract", os.path.join(FIX, "does_not_exist.py"))
+    assert proc.returncode == 0
+    payload = json.loads(proc.stdout)
+    assert payload["error"] == "not_found"
+
+
+def test_broad_except_path_still_exit_zero():
+    # A directory path raises IsADirectoryError (an OSError, not
+    # FileNotFoundError) from open() — this exercises the generic
+    # `except Exception` branch rather than the not_found branch.
+    proc = _run("extract", FIX)
+    assert proc.returncode == 0
+    payload = json.loads(proc.stdout)
+    assert "error" in payload

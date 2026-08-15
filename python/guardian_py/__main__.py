@@ -14,6 +14,11 @@ from guardian_py.extract import extract_file
 def main(argv: list[str] | None = None) -> int:
     """Dispatch a guardian_py subcommand; always return 0 (fail-open contract)."""
     parser = argparse.ArgumentParser(prog="guardian_py")
+    # NOTE: a malformed invocation (no subcommand, or an unknown one) makes
+    # argparse print usage to stderr and call sys.exit(2) itself, bypassing the
+    # `return 0` below. That's acceptable here: the only caller is the
+    # well-formed Node py-adapter, and Node treats any non-zero exit as
+    # fail-open (skip Python validation), same as every other error path here.
     sub = parser.add_subparsers(dest="command", required=True)
     p_extract = sub.add_parser("extract", help="Extract units from one file")
     p_extract.add_argument("file")

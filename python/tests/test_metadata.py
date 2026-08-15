@@ -32,3 +32,16 @@ def test_prose_with_compound_word_is_not_metadata():
     # "DataLayer:" must not match — the \b anchor prevents prose false-positives.
     meta = parse_doc_metadata("Uses the DataLayer: storage tier for caching.")
     assert meta == {"domains": [], "tags": [], "layer": None}
+
+
+def test_label_value_stops_at_newline():
+    # A label line without a terminating period must not swallow following prose.
+    doc = "Domain: options, marking\n\nThis is prose that follows the metadata.\n"
+    meta = parse_doc_metadata(doc)
+    assert meta["domains"] == ["options", "marking"]
+
+
+def test_label_must_start_a_line_not_be_embedded_in_prose():
+    doc = "See the Domain: model layer for details.\n"
+    meta = parse_doc_metadata(doc)
+    assert meta == {"domains": [], "tags": [], "layer": None}

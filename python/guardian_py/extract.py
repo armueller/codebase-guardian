@@ -26,16 +26,10 @@ def extract_source(source: str, file: str) -> dict:
     module_doc = ast.get_docstring(tree)
     module_meta = parse_doc_metadata(module_doc)
     exported = _exported_names(tree)
+    source_lines = source.splitlines()
 
     units: list[dict] = []
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef):
-            units.append(_class_unit(node, exported))
-            for child in node.body:
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    units.append(_func_unit(child, exported, kind="method"))
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            units.append(_func_unit(node, exported, kind="function"))
+    _walk_body(tree.body, exported, source_lines, None, units)
 
     return {
         "language": "py",
@@ -49,17 +43,53 @@ def extract_source(source: str, file: str) -> dict:
     }
 
 
+def _walk_body(
+    body: list[ast.stmt],
+    exported: set[str] | None,
+    source_lines: list[str],
+    parent: str | None,
+    units: list[dict],
+) -> None:
+    """Recursively collect class/function/method units from a statement body.
+
+    Only `ClassDef` bodies are recursed into (to reach nested classes and their
+    methods) — function bodies are never walked, so nested functions inside a
+    method are not treated as units. `parent` is the enclosing class name, or
+    `None` at module level (and for module-level functions/classes).
+    """
+    for node in body:
+        if isinstance(node, ast.ClassDef):
+            units.append(_class_unit(node, exported, source_lines, parent=parent))
+            _walk_body(node.body, exported, source_lines, node.name, units)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            kind = "function" if parent is None else "method"
+            units.append(_func_unit(node, exported, kind=kind, parent=parent))
+
+
+def _all_string_elements(value: ast.expr | None) -> set[str] | None:
+    if isinstance(value, (ast.List, ast.Tuple)):
+        return {
+            el.value
+            for el in value.elts
+            if isinstance(el, ast.Constant) and isinstance(el.value, str)
+        }
+    return None
+
+
 def _exported_names(tree: ast.Module) -> set[str] | None:
     for node in tree.body:
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == "__all__":
-                    if isinstance(node.value, (ast.List, ast.Tuple)):
-                        return {
-                            el.value
-                            for el in node.value.elts
-                            if isinstance(el, ast.Constant) and isinstance(el.value, str)
-                        }
+                    names = _all_string_elements(node.value)
+                    if names is not None:
+                        return names
+        elif isinstance(node, ast.AnnAssign):
+            # __all__: list[str] = [...] — a single `.target`, not `.targets`.
+            if isinstance(node.target, ast.Name) and node.target.id == "__all__":
+                names = _all_string_elements(node.value)
+                if names is not None:
+                    return names
     return None
 
 
@@ -79,13 +109,76 @@ def _summary(doc: str | None) -> str | None:
     return doc.strip().splitlines()[0].strip()
 
 
-def _class_unit(node: ast.ClassDef, exported: set[str] | None) -> dict:
+def _line_comment(source_lines: list[str], lineno: int) -> str | None:
+    """Trailing `# ...` comment text on a 1-indexed source line, or None.
+
+    Last-`#`-on-line heuristic: good enough since field declaration lines
+    rarely contain a literal `#` inside a string.
+    """
+    if lineno < 1 or lineno > len(source_lines):
+        return None
+    line = source_lines[lineno - 1]
+    idx = line.rfind("#")
+    if idx == -1:
+        return None
+    return line[idx + 1 :].strip() or None
+
+
+def _fields(node: ast.ClassDef, source_lines: list[str]) -> list[dict]:
+    """Class-level attribute fields (dataclass-style AnnAssign, plus plain Assign).
+
+    Skips methods (FunctionDef/AsyncFunctionDef) and nested classes (ClassDef) —
+    those are emitted as their own units, not fields.
+    """
+    fields: list[dict] = []
+    for child in node.body:
+        if isinstance(child, ast.AnnAssign):
+            if isinstance(child.target, ast.Name):
+                fields.append(
+                    {
+                        "name": child.target.id,
+                        "annotation": _annotation(child.annotation),
+                        "default": ast.unparse(child.value) if child.value is not None else None,
+                        "comment": _line_comment(source_lines, child.lineno),
+                    }
+                )
+        elif isinstance(child, ast.Assign):
+            for target in child.targets:
+                if isinstance(target, ast.Name):
+                    fields.append(
+                        {
+                            "name": target.id,
+                            "annotation": None,
+                            "default": ast.unparse(child.value) if child.value is not None else None,
+                            "comment": _line_comment(source_lines, child.lineno),
+                        }
+                    )
+    return fields
+
+
+def _is_dataclass_decorator(decorator_text: str) -> bool:
+    # Bare `dataclass` / `dataclass(...)`, and qualified `dataclasses.dataclass`
+    # / `dataclasses.dataclass(...)`. Strip any call args, then compare the text
+    # after the last `.` to `dataclass`. Aliased imports (`import dataclasses as
+    # dc`) are out of scope — no import tracking is attempted.
+    base = decorator_text.split("(", 1)[0]
+    return base.rsplit(".", 1)[-1] == "dataclass"
+
+
+def _class_unit(
+    node: ast.ClassDef,
+    exported: set[str] | None,
+    source_lines: list[str],
+    *,
+    parent: str | None,
+) -> dict:
     decorators = _decorators(node)
-    is_dc = any(d == "dataclass" or d.startswith("dataclass(") for d in decorators)
+    is_dc = any(_is_dataclass_decorator(d) for d in decorators)
     doc = ast.get_docstring(node)
     return {
         "kind": "dataclass" if is_dc else "class",
         "name": node.name,
+        "parent": parent,
         "line": node.lineno,
         "end_line": getattr(node, "end_lineno", node.lineno),
         "is_exported": _is_exported(node.name, exported),
@@ -94,14 +187,16 @@ def _class_unit(node: ast.ClassDef, exported: set[str] | None) -> dict:
         "docstring": doc,
         **parse_doc_metadata(doc),
         "signature": None,
+        "fields": _fields(node, source_lines),
     }
 
 
-def _func_unit(node, exported: set[str] | None, *, kind: str) -> dict:
+def _func_unit(node, exported: set[str] | None, *, kind: str, parent: str | None) -> dict:
     doc = ast.get_docstring(node)
     return {
         "kind": kind,
         "name": node.name,
+        "parent": parent,
         "line": node.lineno,
         "end_line": getattr(node, "end_lineno", node.lineno),
         "is_exported": _is_exported(node.name, exported),

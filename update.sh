@@ -97,9 +97,10 @@ if command -v python3 &>/dev/null; then
   if [[ -x "$PYENV_DIR/bin/pip" ]]; then
     "$PYENV_DIR/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
     if "$PYENV_DIR/bin/pip" install --quiet -r "$GUARDIAN_HOME/source/requirements-python.txt" >/dev/null 2>&1; then
-      # Smoke-test the helper end to end
+      # Smoke-test the helper end to end, plus the real toolchain imports cleanly
       if PYTHONPATH="$GUARDIAN_HOME/source/python" "$PYENV_DIR/bin/python" -m guardian_py extract \
-           "$GUARDIAN_HOME/source/python/tests/fixtures/models_sample.py" >/dev/null 2>&1; then
+           "$GUARDIAN_HOME/source/python/tests/fixtures/models_sample.py" >/dev/null 2>&1 \
+         && "$PYENV_DIR/bin/python" -c "import griffe, jedi" >/dev/null 2>&1; then
         ok "Python toolchain provisioned ($("$PYENV_DIR/bin/python" --version))"
       else
         warn "guardian_py smoke test failed — Python validation will be disabled"

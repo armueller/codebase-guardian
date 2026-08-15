@@ -16,8 +16,12 @@ class Mark:
     Domain: options, marking. Tags: mark, carry-forward, staleness.
     """
 
-    price: float
-    stale_sessions: int
+    price: float  # dollars per share
+    stale_sessions: int = 0
+
+    def is_stale(self) -> bool:
+        """Whether this mark is too old to trust."""
+        return self.stale_sessions > 0
 
 
 def score_strike(contract: "Contract", weights: float = DEFAULT_WEIGHTS) -> float:

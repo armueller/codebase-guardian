@@ -42,6 +42,61 @@ def test_export_via_all_and_underscore():
     assert units["_private_helper"]["is_exported"] is False
 
 
+def test_nested_class_recursive_walk():
+    units = _units_by_name(extract_file(os.path.join(FIX, "nested_class_sample.py")))
+    assert units["Outer"]["kind"] == "class"
+    assert units["Outer"]["parent"] is None
+    assert units["Meta"]["kind"] == "class"
+    assert units["Meta"]["parent"] == "Outer"
+    assert units["describe"]["kind"] == "method"
+    assert units["describe"]["parent"] == "Meta"
+    assert units["outer_method"]["kind"] == "method"
+    assert units["outer_method"]["parent"] == "Outer"
+
+
+def test_qualified_dataclass_decorator_detected():
+    units = _units_by_name(extract_file(os.path.join(FIX, "qualified_dataclass.py")))
+    assert units["QualifiedBare"]["kind"] == "dataclass"
+    assert units["QualifiedCalled"]["kind"] == "dataclass"
+
+
+def test_dataclass_fields():
+    units = _units_by_name(extract_file(os.path.join(FIX, "models_sample.py")))
+    mark = units["Mark"]
+    fields = {f["name"]: f for f in mark["fields"]}
+    assert fields["price"] == {
+        "name": "price",
+        "annotation": "float",
+        "default": None,
+        "comment": "dollars per share",
+    }
+    assert fields["stale_sessions"] == {
+        "name": "stale_sessions",
+        "annotation": "int",
+        "default": "0",
+        "comment": None,
+    }
+    # Methods must not appear as fields.
+    assert "is_stale" not in fields
+
+
+def test_method_and_function_parent_linkage():
+    units = _units_by_name(extract_file(os.path.join(FIX, "models_sample.py")))
+    assert units["is_stale"]["kind"] == "method"
+    assert units["is_stale"]["parent"] == "Mark"
+    assert units["score_strike"]["kind"] == "function"
+    assert units["score_strike"]["parent"] is None
+
+
+def test_annotated_all_restricts_exports():
+    # __all__: list[str] = [...] is an ast.AnnAssign, not ast.Assign. A name not
+    # in it must report is_exported=False even though it has no leading
+    # underscore (otherwise the underscore-convention fallback over-exports it).
+    units = _units_by_name(extract_file(os.path.join(FIX, "annotated_all.py")))
+    assert units["public_fn"]["is_exported"] is True
+    assert units["looks_public_but_not_exported"]["is_exported"] is False
+
+
 def test_syntax_error_payload():
     result = extract_file(os.path.join(FIX, "broken.py"))
     assert result["error"] == "syntax"
