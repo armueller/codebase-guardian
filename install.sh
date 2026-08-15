@@ -124,6 +124,8 @@ rsync -a --delete \
   --exclude dist \
   --exclude .git \
   --exclude '*.db' \
+  --exclude '.venv' \
+  --exclude '__pycache__' \
   "$SCRIPT_DIR/" "$GUARDIAN_HOME/source/"
 
 ok "Source files copied"
@@ -135,6 +137,29 @@ cd "$GUARDIAN_HOME/source"
 npm install --ignore-scripts 2>&1 | tail -1
 npm rebuild better-sqlite3 2>&1 | tail -1
 ok "Dependencies installed"
+
+# ─── Python Toolchain (optional — Python validation degrades to skip if absent) ─
+info "Provisioning Python toolchain..."
+if command -v python3 &>/dev/null; then
+  PYENV_DIR="$GUARDIAN_HOME/pyenv"
+  python3 -m venv "$PYENV_DIR" 2>/dev/null || warn "venv creation failed — Python validation will be disabled"
+  if [[ -x "$PYENV_DIR/bin/pip" ]]; then
+    "$PYENV_DIR/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
+    if "$PYENV_DIR/bin/pip" install --quiet -r "$GUARDIAN_HOME/source/requirements-python.txt" >/dev/null 2>&1; then
+      # Smoke-test the helper end to end
+      if PYTHONPATH="$GUARDIAN_HOME/source/python" "$PYENV_DIR/bin/python" -m guardian_py extract \
+           "$GUARDIAN_HOME/source/python/tests/fixtures/models_sample.py" >/dev/null 2>&1; then
+        ok "Python toolchain provisioned ($("$PYENV_DIR/bin/python" --version))"
+      else
+        warn "guardian_py smoke test failed — Python validation will be disabled"
+      fi
+    else
+      warn "pip install of Python toolchain failed — Python validation will be disabled"
+    fi
+  fi
+else
+  warn "python3 not found — Python validation will be disabled (TypeScript unaffected)"
+fi
 
 # ─── Build ────────────────────────────────────────────────────────────────────
 

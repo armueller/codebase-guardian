@@ -1,0 +1,10 @@
+# Codebase Guardian Python toolchain. Pins captured via `pip freeze` from a real
+# install (see task-4 brief Step 4). Do not hand-edit versions — re-freeze instead.
+griffe==2.1.0
+jedi==0.20.0
+pydoclint==0.9.1
+ruff==0.16.3
+pyright==1.1.411
+# Direct deps that pin tool behavior/output determinism:
+docstring_parser_fork==0.0.16
+nodeenv==1.10.0
