@@ -13,8 +13,9 @@ import { execFileSync } from 'child_process';
 import { appendFileSync, existsSync, writeFileSync } from 'fs';
 import path from 'path';
 import os from 'os';
-import { ClaudeValidationResponse, ExtractedFunction, ExtractedType, PropertyAccess } from './types.js';
+import { ClaudeValidationResponse, ExtractedClass, ExtractedFunction, ExtractedType, PropertyAccess } from './types.js';
 import type { PatternContext, FunctionResult } from './code-index-client.js';
+import type { PyFinding } from './py-tools.js';
 import {
   getSession,
   setSession,
@@ -981,5 +982,319 @@ The developer has revised the edit based on your previous feedback. Check whethe
 
 ${functionsSection}
 ${typesSection ? `\n== UPDATED TYPES/INTERFACES ==\n\n${typesSection}\n` : ''}
+Re-validate and return the JSON result. Be explicit about which previous violations were addressed and which remain.`;
+}
+
+// ─── Python Prompt Builders ──────────────────────────────────────────────────
+
+/**
+ * @what The JSON-only response contract shared by every Python validation prompt, copied verbatim from SYSTEM_PROMPT's "Your response must be ONLY a JSON object" line and its "## Output Format" JSON structure
+ * @how A plain string constant embedded at the end of both Python prompt builders — unlike the TypeScript path, the Python path has no separate system prompt, so this contract must travel inside the user prompt itself
+ * @why parseClaudeOutput (~line 604) requires a `decision` field and a `violations` array on the parsed JSON; reusing the exact TS wording keeps both paths compatible with the same parser and prevents the Python path from drifting into a differently-shaped response
+ */
+const PY_RESPONSE_CONTRACT = `Your response must be ONLY a JSON object — no markdown, no explanation text, no code blocks. Just the raw JSON.
+
+Return ONLY this JSON structure:
+{
+  "decision": "allow" or "deny",
+  "violations": ["Specific violation 1 with function name and details", "..."],
+  "suggestions": ["Non-blocking improvement suggestion 1", "..."],
+  "reasoning": "One or two sentence summary of your assessment"
+}`;
+
+/**
+ * @what Formats a single PyFinding (ruff or pydoclint) into a concise one-line string for the prompt
+ * @how Joins tool, code, line, and message into "tool:CODE (line N) — message"; renders "line ?" when line is null
+ * @why Keeps the DETERMINISTIC TOOL FINDINGS section compact and scannable, mirroring formatIndexedFunction's role for the TS prompt
+ *
+ * @param {PyFinding} finding A single ruff or pydoclint finding
+ * @returns {string} Formatted single-line summary
+ *
+ * @sideeffects None
+ * @systemlayer Utility
+ * @domain prompt-formatting, python-support
+ * @tags formatting, prompt-helper, python, ruff, pydoclint
+ */
+function formatPyFinding(finding: PyFinding): string {
+  const line = finding.line !== null ? `line ${finding.line}` : 'line ?';
+  return `${finding.tool}:${finding.code} (${line}) — ${finding.message}`;
+}
+
+/**
+ * @what Renders the combined ruff + pydoclint findings into the DETERMINISTIC TOOL FINDINGS prompt section
+ * @how Concatenates ruff findings then pydoclint findings, each via formatPyFinding, one per line; returns a placeholder line when both arrays are empty
+ * @why Both Python prompt builders (first-attempt and retry) need this identical rendering, so it's factored out once rather than duplicated
+ *
+ * @param {{ ruff: PyFinding[]; pydoclint: PyFinding[] }} toolFindings Findings from both deterministic Python tools
+ * @returns {string} Multi-line rendered findings, or a "(none)" placeholder when both are empty
+ *
+ * @sideeffects None
+ * @systemlayer Utility
+ * @domain prompt-formatting, python-support
+ * @tags formatting, prompt-helper, python, ruff, pydoclint, tool-findings
+ */
+function formatPyToolFindings(toolFindings: { ruff: PyFinding[]; pydoclint: PyFinding[] }): string {
+  const findingLines = [...toolFindings.ruff, ...toolFindings.pydoclint].map(f => `- ${formatPyFinding(f)}`);
+  return findingLines.length > 0 ? findingLines.join('\n') : '(no ruff or pydoclint findings)';
+}
+
+/**
+ * @what Renders the local doc-completeness violations map into the LOCAL DOC-COMPLETENESS prompt section
+ * @how Iterates the Map's entries, rendering each unit name as a heading followed by its violation strings as a bullet list
+ * @why Both Python prompt builders need this identical rendering of checkPythonDocCompleteness's output, so it's factored out once rather than duplicated
+ *
+ * @param {Map<string, string[]>} docViolations Unit name (or '__module__') to violation strings, from checkPythonDocCompleteness
+ * @returns {string} Multi-line rendered violations, or a "(none)" placeholder when the map is empty
+ *
+ * @sideeffects None
+ * @systemlayer Utility
+ * @domain prompt-formatting, python-support
+ * @tags formatting, prompt-helper, python, doc-completeness, violations
+ */
+function formatDocViolations(docViolations: Map<string, string[]>): string {
+  if (docViolations.size === 0) return '(no local doc-completeness violations)';
+
+  const entries: string[] = [];
+  for (const [unitName, unitViolations] of docViolations) {
+    entries.push(`${unitName}:`);
+    for (const v of unitViolations) {
+      entries.push(`  - ${v}`);
+    }
+  }
+  return entries.join('\n');
+}
+
+/**
+ * @what Synthesizes a best-effort, readable Python declaration block for a class/dataclass unit
+ * @how Builds `class Name(Parent):` or `class Name:` from cls.parent, appends the docstring as an indented triple-quoted line when present, then appends each entry in cls.fields as `    name: annotation = default  # comment` (omitting parts that are null); falls back to a `pass` body when there's neither docstring nor fields
+ * @why ExtractedClass (unlike ExtractedFunction) has no `fullCode` property — the UNITS section needs something to fence as python, so this reconstructs a plausible declaration from the structured fields/parent/docstring/kind guardian_py already extracted, mirroring py-adapter.ts's buildFunctionFullCode
+ *
+ * @param {ExtractedClass} cls Class/dataclass unit to render
+ * @returns {string} A synthesized `class ...:` declaration block
+ *
+ * @sideeffects None
+ * @systemlayer Utility
+ * @domain prompt-formatting, python-support
+ * @tags formatting, prompt-helper, python, class, dataclass, code-reconstruction
+ */
+function buildClassDeclaration(cls: ExtractedClass): string {
+  const header = cls.parent ? `class ${cls.name}(${cls.parent}):` : `class ${cls.name}:`;
+  const lines = [header];
+
+  if (cls.docstring) {
+    lines.push(`    """${cls.docstring}"""`);
+  }
+  for (const field of cls.fields) {
+    let fieldLine = `    ${field.name}`;
+    if (field.annotation) fieldLine += `: ${field.annotation}`;
+    if (field.default !== null) fieldLine += ` = ${field.default}`;
+    if (field.comment) fieldLine += `  # ${field.comment}`;
+    lines.push(fieldLine);
+  }
+  if (lines.length === 1) {
+    lines.push('    pass');
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * @what Renders a single Python function/method unit into a UNITS prompt entry
+ * @how Formats name, NEW/MODIFIED status, docstring-present status (from hasJSDoc), and fullCode fenced as python
+ * @why Isolates the function-unit rendering rule so formatPyUnits can compose it with formatPyClassUnit without duplicating the block layout
+ *
+ * @param {ExtractedFunction} fn Function/method unit to render
+ * @returns {string} A single UNITS entry for this function
+ *
+ * @sideeffects None
+ * @systemlayer Utility
+ * @domain prompt-formatting, python-support
+ * @tags formatting, prompt-helper, python, function, method
+ */
+function formatPyFunctionUnit(fn: ExtractedFunction): string {
+  const docStatus = fn.hasJSDoc ? 'Docstring: present' : 'Docstring: MISSING';
+  return `Function: ${fn.name}
+Status: ${fn.isNew ? 'NEW' : 'MODIFIED'}
+${docStatus}
+
+Code:
+\`\`\`python
+${fn.fullCode}
+\`\`\``;
+}
+
+/**
+ * @what Renders a single Python class/dataclass unit into a UNITS prompt entry
+ * @how Formats kind (capitalized), name, NEW/MODIFIED status, docstring-present status, and a synthesized declaration block from buildClassDeclaration
+ * @why Isolates the class-unit rendering rule so formatPyUnits can compose it with formatPyFunctionUnit without duplicating the block layout
+ *
+ * @param {ExtractedClass} cls Class/dataclass unit to render
+ * @returns {string} A single UNITS entry for this class
+ *
+ * @sideeffects None
+ * @systemlayer Utility
+ * @domain prompt-formatting, python-support
+ * @tags formatting, prompt-helper, python, class, dataclass
+ */
+function formatPyClassUnit(cls: ExtractedClass): string {
+  const docStatus = cls.docstring ? 'Docstring: present' : 'Docstring: MISSING';
+  const kindLabel = cls.kind.charAt(0).toUpperCase() + cls.kind.slice(1);
+  return `${kindLabel}: ${cls.name}
+Status: ${cls.isNew ? 'NEW' : 'MODIFIED'}
+${docStatus}
+
+Code:
+\`\`\`python
+${buildClassDeclaration(cls)}
+\`\`\``;
+}
+
+/**
+ * @what Renders Python functions/methods and classes/dataclasses into the UNITS prompt section
+ * @how Maps functions through formatPyFunctionUnit and classes (module-kind entries skipped — module metadata is rendered separately by the caller) through formatPyClassUnit, joining every entry with a "---" separator
+ * @why Both Python prompt builders need this identical rendering of the proposed edit's units, so it's factored out once rather than duplicated between first-attempt and retry
+ *
+ * @param {ExtractedFunction[]} functions Proposed functions/methods to render
+ * @param {ExtractedClass[]} classes Proposed classes/dataclasses (module-kind entries are skipped) to render
+ * @returns {string} Multi-line rendered units, or a "(none)" placeholder when both arrays are empty
+ *
+ * @sideeffects None
+ * @systemlayer Utility
+ * @domain prompt-formatting, python-support
+ * @tags formatting, prompt-helper, python, function, class, dataclass
+ */
+function formatPyUnits(functions: ExtractedFunction[], classes: ExtractedClass[]): string {
+  const entries = [
+    ...functions.map(formatPyFunctionUnit),
+    ...classes.filter(cls => cls.kind !== 'module').map(formatPyClassUnit),
+  ];
+
+  return entries.length > 0 ? entries.join('\n\n---\n\n') : '(no units in this edit)';
+}
+
+/**
+ * @what Builds the full first-attempt validation prompt for a proposed Python edit
+ * @how Assembles the pragmatic Python convention, the deterministic ruff/pydoclint findings, the local doc-completeness violations, the module metadata, the proposed functions/classes as UNITS, the NO-INDEX and WARN-NOT-DENY notices, an optional syntax-note, and the shared JSON-only response contract into one prompt string. Unlike the TypeScript path, there is no separate system prompt for Python — everything the model needs lives in this single string.
+ * @why The Python validation path has no code index coverage and must bias toward allow-with-suggestion (pyright/ruff run in CI, not here) — this prompt carries both constraints explicitly so headless Claude doesn't apply the stricter TypeScript decision logic to Python edits
+ *
+ * @param {object} context Validation context for the proposed Python edit
+ * @param {string} context.filePath File being edited
+ * @param {ExtractedFunction[]} context.functions Proposed functions/methods
+ * @param {ExtractedClass[]} context.classes Proposed classes/dataclasses
+ * @param {{ docstring: string | null; domains: string[]; tags: string[]; layer: string | null }} context.module Module-level metadata
+ * @param {Map<string, string[]>} context.docViolations Local doc-completeness violations from checkPythonDocCompleteness
+ * @param {{ ruff: PyFinding[]; pydoclint: PyFinding[] }} context.toolFindings Deterministic findings from runPyTools
+ * @param {boolean} context.isNewFile Whether this edit creates a new file
+ * @param {boolean} [context.syntaxNote] Whether the extractor reported an intermediate/partial parse state
+ * @returns {string} Complete first-attempt validation prompt for the Python path
+ *
+ * @sideeffects None
+ * @systemlayer Prompt Engineering
+ * @domain prompt-building, python-support, code-quality
+ * @tags prompt-engineering, python, first-attempt, no-index, warn-not-deny, validation-prompt
+ */
+export function buildPythonFirstAttemptPrompt(context: {
+  filePath: string;
+  functions: ExtractedFunction[];
+  classes: ExtractedClass[];
+  module: { docstring: string | null; domains: string[]; tags: string[]; layer: string | null };
+  docViolations: Map<string, string[]>;
+  toolFindings: { ruff: PyFinding[]; pydoclint: PyFinding[] };
+  isNewFile: boolean;
+  syntaxNote?: boolean;
+}): string {
+  const { filePath, functions, classes, module, docViolations, toolFindings, isNewFile, syntaxNote } = context;
+
+  const conventionSection = `Every module and class/dataclass must carry a docstring with a one-line "what" and a \`Domain:\` line (classes may also add an optional \`Tags:\` line). Every PUBLIC function/method must carry a one-line docstring. Only demand \`Args:\`/\`Returns:\`/\`Raises:\` sections when the signature is non-trivial (multiple params, a non-obvious return, or raised exceptions) — do NOT require them on simple functions. Types live in annotations (PEP 604 syntax, e.g. \`int | None\`), NOT in docstring prose — never ask for types to be repeated in prose. DRY: prefer reusing existing helpers; watch for hand-rolled logic that a decorator, a \`functools\` utility, a context manager, or the data model (dataclass/Pydantic) already provides.`;
+
+  const moduleSection = `Docstring: ${module.docstring ? 'present' : 'MISSING'}
+Domains: ${module.domains.join(', ') || '(none)'}
+Tags: ${module.tags.join(', ') || '(none)'}
+Layer: ${module.layer ?? '(none)'}`;
+
+  const syntaxSection = syntaxNote
+    ? '\n== INTERMEDIATE SYNTAX STATE ==\n\nThis edit is a partial/intermediate state (parse incomplete) — treat structural gaps as in-progress and do not deny for them.\n'
+    : '';
+
+  return `You are validating a proposed edit to a PYTHON file (\`${filePath}\`)${isNewFile ? ' (NEW FILE)' : ''}. Decide allow or deny.
+
+== CONVENTION ==
+
+${conventionSection}
+${syntaxSection}
+== DETERMINISTIC TOOL FINDINGS (ruff + pydoclint — authoritative facts for style and docstring-signature mismatches) ==
+
+${formatPyToolFindings(toolFindings)}
+
+ruff and pyright style/type checks are ALSO enforced in CI — do not re-litigate style; treat the findings above as settled facts, not things to independently re-derive.
+
+== LOCAL DOC-COMPLETENESS ==
+
+${formatDocViolations(docViolations)}
+
+== MODULE ==
+
+${moduleSection}
+
+== UNITS (functions, methods, classes, dataclasses being edited) ==
+
+${formatPyUnits(functions, classes)}
+
+== NO-INDEX NOTICE (critical) ==
+
+The semantic code index does NOT yet cover Python, so you have NO cross-file sibling/caller context. Judge DRY and pattern-consistency ONLY from the code shown — do NOT claim a duplicate exists elsewhere. Cross-file checks arrive in a later phase.
+
+== WARN-NOT-DENY (critical) ==
+
+Python is dynamically typed and pyright runs in CI, not here. Bias STRONGLY toward allow-with-suggestion on any runtime/type/attribute/API concern. Deny ONLY for a clear in-this-code contradiction: a docstring that plainly lies about what the body does, a real DRY duplication visible in the shown code, or a missing required docstring/Domain per the convention above.
+
+${PY_RESPONSE_CONTRACT}`;
+}
+
+/**
+ * @what Builds the compact retry prompt for a resumed Python headless Claude session
+ * @how Restates the still-open local doc-completeness violations, the deterministic tool findings, and the updated units — the resumed session already has the convention, NO-INDEX notice, and WARN-NOT-DENY guidance from the first-attempt prompt
+ * @why On resume, Claude already has the full Python convention and prior reasoning; resending it would waste tokens and latency, mirroring how buildRetryPrompt is a compact version of buildFirstAttemptPrompt for the TypeScript path
+ *
+ * @param {object} context Updated edit context for the retry
+ * @param {string} context.filePath File being edited
+ * @param {ExtractedFunction[]} context.functions Updated proposed functions/methods
+ * @param {ExtractedClass[]} context.classes Updated proposed classes/dataclasses
+ * @param {Map<string, string[]>} context.docViolations Updated local doc-completeness violations
+ * @param {{ ruff: PyFinding[]; pydoclint: PyFinding[] }} context.toolFindings Updated deterministic findings from runPyTools
+ * @returns {string} Compact retry prompt for the Python path
+ *
+ * @sideeffects None
+ * @systemlayer Prompt Engineering
+ * @domain prompt-building, python-support, retry-prompt, session-resume
+ * @tags prompt-engineering, python, retry, compact-prompt, session-continuity
+ */
+export function buildPythonRetryPrompt(context: {
+  filePath: string;
+  functions: ExtractedFunction[];
+  classes: ExtractedClass[];
+  docViolations: Map<string, string[]>;
+  toolFindings: { ruff: PyFinding[]; pydoclint: PyFinding[] };
+}): string {
+  const { filePath, functions, classes, docViolations, toolFindings } = context;
+
+  return `UPDATED EDIT (retry) for ${filePath}:
+
+The developer has revised the edit based on your previous feedback. Check whether your previous violations have been addressed, and check for any NEW issues introduced by the changes.
+
+== DETERMINISTIC TOOL FINDINGS (ruff + pydoclint — authoritative) ==
+
+${formatPyToolFindings(toolFindings)}
+
+== LOCAL DOC-COMPLETENESS ==
+
+${formatDocViolations(docViolations)}
+
+== UPDATED UNITS ==
+
+${formatPyUnits(functions, classes)}
+
+${PY_RESPONSE_CONTRACT}
+
 Re-validate and return the JSON result. Be explicit about which previous violations were addressed and which remain.`;
 }
