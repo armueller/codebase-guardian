@@ -6,3 +6,4 @@ dist/
 .validation-sessions.json
 *.log
 *.log.old
+.guardian/
