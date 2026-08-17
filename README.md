@@ -93,6 +93,21 @@ After that, the guardian is active on **every project** you open in Claude Code.
 
 This removes the plugin, its hook, and its MCP server, along with the plugin's data directory (indexes, logs, built engine). Pass `--keep-data` to preserve it.
 
+### Migrating from the old shell install
+
+Earlier versions installed via `install.sh` — a user-level hook in `~/.claude/settings.json`, an MCP server registered with `claude mcp add`, skills copied into `~/.claude/skills/`, and data under `~/.codebase-guardian/`. If you're coming from that, do this once:
+
+1. **Remove the shell install** so it doesn't double-register with the plugin (two hooks validating every edit, two MCP servers):
+   ```bash
+   # remove the guardian PreToolUse hook from ~/.claude/settings.json (back it up first)
+   jq 'if .hooks.PreToolUse then .hooks.PreToolUse |= map(select(.hooks | all(.command | contains("codebase-guardian") | not))) else . end' \
+     ~/.claude/settings.json > /tmp/s.json && mv /tmp/s.json ~/.claude/settings.json
+   claude mcp remove codebase-guardian --scope user
+   rm -rf ~/.claude/skills/audit ~/.claude/skills/hook-audit ~/.claude/skills/review-suggestions
+   ```
+2. **Install the plugin** (see [Install](#install) above).
+3. **Re-index each project.** The plugin keeps its data in the plugin data directory (`${CLAUDE_PLUGIN_DATA}`), **not** `~/.codebase-guardian/`, so your old indexes are orphaned. Until a project is re-indexed there, the hook finds no index and **fails open (no validation)**. In each project you want guarded, ask Claude to run the **`rebuild_index`** MCP tool (or `npm run build-index`). Once you're satisfied, `~/.codebase-guardian/` can be deleted.
+
 ## Getting Started
 
 ### 1. Build the Index
