@@ -730,7 +730,8 @@ export async function buildPatternContext(
   modifiedFunctions: string[],
   createdFunctions: string[],
   calledFunctions: string[],
-  editComments: string[] = []
+  editComments: string[] = [],
+  editLanguage?: 'ts' | 'py'
 ): Promise<PatternContext> {
   // Normalize to relative path — the code index stores relative paths (e.g., "app/controllers/...")
   // but hooks receive absolute paths from tool input (e.g., "/Users/.../app/controllers/...")
@@ -743,8 +744,15 @@ export async function buildPatternContext(
   const readme = getDirectoryReadme(relativePath);
   const directoryReadme = readme?.description ?? null;
 
-  // 2. Get sibling functions in same directory
-  const siblingFunctions = getDirectoryFunctions(relativePath);
+  // 2. Get sibling functions in same directory.
+  //    When the caller specifies the edit's language (the Python path does), keep
+  //    only same-language siblings: the code index is shared across languages, so a
+  //    mixed-language directory could otherwise surface TS siblings to a .py edit.
+  //    The TS caller passes no language → unfiltered (behavior unchanged).
+  let siblingFunctions = getDirectoryFunctions(relativePath);
+  if (editLanguage) {
+    siblingFunctions = siblingFunctions.filter(f => f.language === editLanguage);
+  }
 
   // 3. Batch lookup called functions
   const calledFunctionDetails = batchLookupFunctions(calledFunctions);
@@ -776,19 +784,32 @@ export async function buildPatternContext(
       .toLowerCase();
 
     // Try semantic search first for better conceptual matching,
-    // fall back to FTS if embeddings are unavailable
+    // fall back to FTS if embeddings are unavailable.
+    // When filtering by language (Python path), over-fetch so same-language matches
+    // ranked below cross-language ones aren't lost when we filter down to the top 5.
+    // With no editLanguage (TS path) the fetch limit stays 5 → results unchanged.
+    const SIMILAR_LIMIT = 5;
+    const fetchLimit = editLanguage ? SIMILAR_LIMIT * 4 : SIMILAR_LIMIT;
     let similar: FunctionResult[] = [];
     try {
-      similar = await semanticSearchFromHook(getDb(), searchTerms, 5);
+      similar = await semanticSearchFromHook(getDb(), searchTerms, fetchLimit);
     } catch {
       // Embedding model unavailable — fall back to FTS
     }
     if (similar.length === 0) {
-      similar = searchFTS(searchTerms, 5);
+      similar = searchFTS(searchTerms, fetchLimit);
+    }
+
+    // Keep only same-language candidates when the edit's language is known, so a
+    // .py edit's DRY check never surfaces TypeScript functions (the shared index is
+    // cross-language). No-op for the TS path, which passes no editLanguage.
+    if (editLanguage) {
+      similar = similar.filter(f => f.language === editLanguage);
     }
 
     // Filter out the function itself (don't flag a function as similar to itself)
-    const filtered = similar.filter(f => f.name !== funcName);
+    // and cap at the display limit (a no-op when fetchLimit === SIMILAR_LIMIT).
+    const filtered = similar.filter(f => f.name !== funcName).slice(0, SIMILAR_LIMIT);
 
     if (filtered.length > 0) {
       similarExistingFunctions.set(funcName, filtered);

@@ -295,7 +295,10 @@ export async function validatePythonEdit(
       const editComments = extractPythonComments(newString);
 
       const t7 = Date.now();
-      const patternContext = await buildPatternContext(filePath, modified, created, [], editComments)
+      // Pass 'py' so the DRY-similarity and sibling lookups are language-scoped —
+      // the code index is shared across languages, so an unfiltered search could
+      // otherwise surface TypeScript functions as "similar" to this Python edit.
+      const patternContext = await buildPatternContext(filePath, modified, created, [], editComments, 'py')
         .catch(() => EMPTY_PATTERN_CONTEXT);
       log(`[PY][TIMING] Build pattern context: ${Date.now() - t7}ms`);
       log(`[PY][CONTEXT] README: ${patternContext.directoryReadme ? 'found' : 'none'}, Siblings: ${patternContext.siblingFunctions.length}, Similar: ${patternContext.similarExistingFunctions.size}, Callers: ${patternContext.callerDetails.size}, RelevantDocs: ${patternContext.relevantDocs.length}, SimilarComments: ${patternContext.similarComments.length}`);

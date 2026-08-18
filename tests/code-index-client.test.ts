@@ -4,6 +4,8 @@ import { mkdtempSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { extractInlineComments, buildPatternContext, setProjectContext } from '../src/hooks/helpers/code-index-client.js';
+import { resolveConfig } from '../src/config.js';
+import { openDatabase, insertFunction } from '../src/mcp-server/db.js';
 
 describe('extractInlineComments', () => {
   it('extracts single-line comments', () => {
@@ -105,6 +107,76 @@ describe('buildPatternContext (fail-open when no index exists)', () => {
       } else {
         process.env.GUARDIAN_HOME = originalGuardianHome;
       }
+    }
+  });
+});
+
+// ─── buildPatternContext (language-scoped for the Python path) ────────────────
+//
+// The code index is shared across languages (TS + Python rows in one `functions`
+// table). Without a language filter, a Python edit's DRY/sibling lookups can
+// surface TypeScript functions (final-review finding). The Python path passes
+// editLanguage='py' so siblings and similar-functions are language-scoped; the TS
+// path passes nothing and is unaffected. The `pypkg` fixture deliberately colocates
+// a `sample.ts` with `helpers.py`/`models.py` in one directory to exercise this.
+
+describe('buildPatternContext (language-scoped when editLanguage is given)', () => {
+  it('excludes TypeScript siblings from a Python edit, but includes them without a language filter', async () => {
+    const originalGuardianHome = process.env.GUARDIAN_HOME;
+    const originalProjectRoot = process.env.GUARDIAN_PROJECT_ROOT;
+    const tmpProjectRoot = mkdtempSync(path.join(tmpdir(), 'guardian-langfilter-proj-'));
+    mkdirSync(path.join(tmpProjectRoot, '.git'));
+    const tmpGuardianHome = mkdtempSync(path.join(tmpdir(), 'guardian-home-langfilter-'));
+    const pyFile = path.join(tmpProjectRoot, 'pkg', 'a.py');
+
+    try {
+      process.env.GUARDIAN_HOME = tmpGuardianHome;
+      process.env.GUARDIAN_PROJECT_ROOT = tmpProjectRoot;
+
+      // Populate an on-disk index at the resolved DB path with two SAME-DIRECTORY
+      // siblings — one TS, one Python — so getDb() (readonly) inside
+      // buildPatternContext reads them. The edited file (pkg/a.py) needs no row;
+      // getDirectoryFunctions excludes it via file_path != anyway.
+      const cfg = resolveConfig(pyFile);
+      mkdirSync(path.dirname(cfg.databasePath), { recursive: true });
+      const db = openDatabase(cfg.databasePath);
+      const mkRow = (name: string, file: string, language: 'ts' | 'py') =>
+        insertFunction(db, {
+          name, description: `${name} helper`, file_path: file, line_number: 1,
+          is_exported: true, declaration_type: 'function', side_effects: null,
+          system_layer: null, tier: 2, language,
+        });
+      mkRow('tsSibling', 'pkg/b.ts', 'ts');
+      mkRow('pySibling', 'pkg/c.py', 'py');
+      db.close();
+
+      setProjectContext(pyFile);
+
+      // Control (no language filter): the TS sibling is present and would leak.
+      const unfiltered = await buildPatternContext(pyFile, ['a_helper'], [], [], []);
+      assert.equal(
+        unfiltered.siblingFunctions.some(f => f.language === 'ts'),
+        true,
+        'expected the TS sibling to be present when unfiltered (proves it is indexed and the filter is what removes it)',
+      );
+
+      // Python path: siblings must be Python-only.
+      const scoped = await buildPatternContext(pyFile, ['a_helper'], [], [], [], 'py');
+      assert.ok(scoped.siblingFunctions.length > 0, 'expected at least one Python sibling');
+      assert.equal(
+        scoped.siblingFunctions.every(f => f.language === 'py'),
+        true,
+        'Python edit should see only Python siblings',
+      );
+      // No similar-function entry may contain a TS row either.
+      for (const [, sims] of scoped.similarExistingFunctions) {
+        assert.equal(sims.every(f => f.language === 'py'), true, 'Python edit should see only Python DRY candidates');
+      }
+    } finally {
+      if (originalGuardianHome === undefined) delete process.env.GUARDIAN_HOME;
+      else process.env.GUARDIAN_HOME = originalGuardianHome;
+      if (originalProjectRoot === undefined) delete process.env.GUARDIAN_PROJECT_ROOT;
+      else process.env.GUARDIAN_PROJECT_ROOT = originalProjectRoot;
     }
   });
 });
