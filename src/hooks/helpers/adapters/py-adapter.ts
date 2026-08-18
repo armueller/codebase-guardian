@@ -14,6 +14,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { getGuardianHome } from '../../../config.js';
+import { fileURLToPath } from 'url';
 import type { ExtractedClass, ExtractedFunction } from '../types.js';
 
 // ─── guardian_py JSON contract (subset consumed here) ───────────────────────
@@ -237,7 +238,7 @@ function mapClassUnit(unit: PyUnit): ExtractedClass {
 
 /**
  * @what Extracts functions, classes, and module metadata from a Python source buffer via the guardian_py helper
- * @how Resolves the guardian pyenv + installed helper path via getGuardianHome(); if the pyenv python binary is missing, fails open as 'unavailable'. Otherwise writes postEditContent to a scratch temp file, runs `python -m guardian_py extract <file>` with PYTHONPATH set to the helper source, parses the JSON result, and maps it to ExtractedFunction/ExtractedClass. The temp directory is always removed, even on error.
+ * @how Resolves the guardian pyenv binary under getGuardianHome() and the guardian_py helper source relative to this module (it ships alongside the compiled code: repo/python in dev, $CLAUDE_PLUGIN_DATA/app/python under the plugin); if the pyenv python binary is missing, fails open as 'unavailable'. Otherwise writes postEditContent to a scratch temp file, runs `python -m guardian_py extract <file>` with PYTHONPATH set to the helper source, parses the JSON result, and maps it to ExtractedFunction/ExtractedClass. The temp directory is always removed, even on error.
  * @why Wires the Phase-1 guardian_py Python helper into the Node hook so Python edits can be validated using the same extraction shape as TypeScript edits, without ever throwing out of the adapter
  *
  * @param {string} filePath File path being edited (used only for context; the actual disk read is from a scratch temp file, not this path)
@@ -257,7 +258,10 @@ export function extractPython(
 ): PyExtractResult {
   const guardianHome = getGuardianHome();
   const pyBin = path.join(guardianHome, 'pyenv', 'bin', 'python');
-  const pyPath = path.join(guardianHome, 'source', 'python');
+  // The guardian_py helper source ships next to the compiled code, not under the
+  // data dir — resolve it relative to this module: dev → <repo>/python, plugin →
+  // $CLAUDE_PLUGIN_DATA/app/python (both are four levels up from adapters/).
+  const pyPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../python');
 
   if (!existsSync(pyBin)) {
     return { ok: false, reason: 'unavailable' };

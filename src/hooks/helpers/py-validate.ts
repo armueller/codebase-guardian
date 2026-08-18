@@ -1,15 +1,16 @@
 /**
  * @what Self-contained Python validation path for the PreToolUse hook
- * @how Mirrors validateEdit's cache/session/circuit-breaker/headless/decision scaffolding
- *   (pre-edit-validation.ts, ~lines 305-524), substituting guardian_py extraction (py-adapter.ts),
- *   deterministic tool findings (py-tools.ts), and pragmatic doc-completeness checks (py-doc-check.ts)
- *   for the ts-morph/JSDoc pieces the TypeScript path uses. Every early-return path fails open (allow).
+ * @how Runs the same cache → session-resolution → headless → outcome-recording flow as validateEdit,
+ *   but via the shared validation-flow.ts helpers (resolveSessionState / recordValidationOutcome) plus
+ *   guardian_py extraction (py-adapter.ts), deterministic tool findings (py-tools.ts), pragmatic
+ *   doc-completeness checks (py-doc-check.ts), and a neutral Python system prompt. Every early-return
+ *   path fails open (allow).
  * @why Python edits need the same DRY/documentation enforcement as TypeScript edits, but the
  *   extraction, doc-completeness convention, and prompt shape differ enough (no code index coverage,
- *   docstrings instead of JSDoc, PEP 604 type annotations) that reusing validateEdit directly would
- *   require threading Python-specific branches through every step of the TS flow. A dedicated module
- *   keeps the TS path byte-for-byte untouched — some cache/session orchestration is duplicated between
- *   the two paths, which is the accepted tradeoff for that isolation.
+ *   docstrings instead of JSDoc, PEP 604 type annotations) that a dedicated module keeps the TS
+ *   validateEdit flow untouched. The language-agnostic session/outcome logic now lives in
+ *   validation-flow.ts and is shared with this path (a matching migration of validateEdit is a
+ *   deferred follow-up) so the session-store invariants can't drift between the two.
  *
  * @sideeffects Spawns Python subprocesses (via extractPython/runPyTools), executes headless Claude,
  *   reads/writes the validation cache and session store, logs to the validation debug log
@@ -18,26 +19,23 @@
  * @tags python, validation-flow, hook-adapter, session-resume, fail-open
  */
 
-import { appendFileSync, existsSync, mkdirSync, statSync, renameSync } from 'fs';
-import path from 'path';
-import crypto from 'crypto';
+import { appendFileSync, existsSync, statSync, renameSync } from 'fs';
 import { HookInput, HookResponse } from './types.js';
 import { extractPython } from './adapters/py-adapter.js';
 import { runPyTools } from './py-tools.js';
 import { markUnitNovelty, checkPythonDocCompleteness } from './py-doc-check.js';
+import { resolveSessionState, recordValidationOutcome } from './validation-flow.js';
 import {
   executeClaudeHeadless,
   buildPythonFirstAttemptPrompt,
-  buildPythonRetryPrompt
+  buildPythonRetryPrompt,
+  PY_SYSTEM_PROMPT
 } from './claude-headless.js';
 import {
   getCachedValidation,
-  setCachedValidation,
   generateCacheKey,
   clearCacheForFile
 } from './validation-cache.js';
-import { getSession, setDenialInfo, clearSession } from './validation-sessions.js';
-import { shouldStandDown } from './circuit-breaker.js';
 import { resolveConfig } from '../../config.js';
 
 const hookConfig = resolveConfig();
@@ -175,44 +173,14 @@ export async function validatePythonEdit(
     // ── Step 6: Session + circuit breaker + identical resubmission ──
 
     const sessionKey = `${sessionId}:${filePath}`;
-    let existingSession = getSession(sessionKey);
-
-    if (existingSession && existingSession.lastDeniedContentHash) {
-      const onDiskHash = crypto.createHash('sha256').update(currentFileOnDisk).digest('hex').slice(0, 16);
-      if (onDiskHash !== existingSession.lastDeniedContentHash) {
-        log('[PY][SESSION] File content changed since last denial — clearing stale session for fresh validation');
-        clearSession(sessionKey);
-        existingSession = null;
-      }
-    }
-
-    const isRetry = existingSession !== null;
-    log(`[PY][SESSION] ${isRetry ? `Retry attempt #${existingSession!.attemptCount + 1} (session: ${existingSession!.headlessSessionId})` : 'First attempt'}`);
-
-    if (isRetry && shouldStandDown(existingSession!.attemptCount)) {
-      const priorReason = existingSession!.lastDeniedReason || 'see the previous validation output';
-      log(`[PY][SESSION] Circuit breaker: ${existingSession!.attemptCount} consecutive denials — standing down to avoid a permanent block`);
-      clearSession(sessionKey);
-      return {
-        action: 'allow',
-        message: `⚠️ Code Quality is standing down after ${existingSession!.attemptCount} blocked attempts to avoid trapping this edit. The edit is being ALLOWED, but the last review's concerns were NOT resolved — please address them in a follow-up: ${priorReason}`,
-        suggestions: [
-          `The guardian blocked this edit ${existingSession!.attemptCount}× without the issues being resolved and is now allowing it through so work is not permanently blocked. Unresolved concerns: ${priorReason}`
-        ]
-      };
-    }
-
-    if (isRetry && existingSession!.lastDeniedProposedHash) {
-      const proposedHash = crypto.createHash('sha256').update(fullFileContent).digest('hex').slice(0, 16);
-      if (proposedHash === existingSession!.lastDeniedProposedHash) {
-        log('[PY][SESSION] Identical resubmission detected — returning cached denial (saved ~10s headless call)');
-        return {
-          action: 'deny',
-          message: `BLOCKED (identical resubmission): ${existingSession!.lastDeniedReason || 'Same code as previously denied — please fix the violations before retrying'}`,
-          violations: ['Code is identical to the previously denied submission. Fix the issues described above before retrying.']
-        };
-      }
-    }
+    const { isRetry, earlyReturn } = resolveSessionState({
+      sessionKey,
+      currentFileOnDisk,
+      fullFileContent,
+      log,
+      logPrefix: '[PY]'
+    });
+    if (earlyReturn) return earlyReturn;
 
     // ── Step 7: Build prompt ──
 
@@ -245,7 +213,11 @@ export async function validatePythonEdit(
         filePath,
         prompt,
         isRetry,
-        timeoutMs: 120000
+        timeoutMs: 120000,
+        // Python gets a neutral system prompt (not the TS JSDoc/"err-toward-deny" one)
+        // and no code-index MCP — the index has no Python coverage.
+        systemPrompt: PY_SYSTEM_PROMPT,
+        useMcp: false
       });
       log(`[PY][TIMING] Headless Claude execution: ${Date.now() - t9}ms`);
       log(`[PY] Decision: ${validationResult.decision}`);
@@ -254,33 +226,18 @@ export async function validatePythonEdit(
       log(`[PY] Suggestions: ${JSON.stringify(validationResult.suggestions)}`);
       log(`[PY][TIMING] TOTAL VALIDATION TIME: ${Date.now() - startTime}ms`);
 
-      if (validationResult.decision === 'allow') {
-        clearCacheForFile(filePath);
-      }
-
-      setCachedValidation(cacheKey, validationResult, filePath);
-
-      if (validationResult.suggestions && validationResult.suggestions.length > 0) {
-        try {
-          const suggestionsPath = hookConfig.suggestionsPath;
-          mkdirSync(path.dirname(suggestionsPath), { recursive: true });
-          const timestamp = new Date().toISOString();
-          const header = `\n## Session: ${sessionId} — ${timestamp}\n\n`;
-          const entries = validationResult.suggestions
-            .map(s => `- **File:** \`${filePath}\`\n  **Suggestion:** ${s}\n`)
-            .join('\n');
-          appendFileSync(suggestionsPath, header + entries, 'utf-8');
-          log(`[PY][SUGGESTIONS] Logged ${validationResult.suggestions.length} suggestions`);
-        } catch {
-          // Non-fatal — don't block the edit for suggestion logging failures
-        }
-      }
-
-      if (validationResult.decision !== 'allow') {
-        const onDiskHash = crypto.createHash('sha256').update(currentFileOnDisk).digest('hex').slice(0, 16);
-        const proposedHash = crypto.createHash('sha256').update(fullFileContent).digest('hex').slice(0, 16);
-        setDenialInfo(sessionKey, onDiskHash, validationResult.reasoning, proposedHash);
-      }
+      recordValidationOutcome({
+        cacheKey,
+        filePath,
+        sessionKey,
+        sessionId,
+        validationResult,
+        currentFileOnDisk,
+        fullFileContent,
+        suggestionsPath: hookConfig.suggestionsPath,
+        log,
+        logPrefix: '[PY]'
+      });
 
       // Python violations are NOT run through enhanceViolationWithQueryHint: those
       // hints point at code-index MCP tools (api.semanticSearch/callers) that have

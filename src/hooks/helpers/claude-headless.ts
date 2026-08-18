@@ -361,6 +361,8 @@ Your response must still be ONLY a JSON object — any tool calls happen before 
  * @param {string} params.prompt The validation prompt (full context on first attempt, just edit on retry)
  * @param {boolean} params.isRetry Whether this is a retry (has existing headless session)
  * @param {number} params.timeoutMs Timeout in milliseconds (default 30000)
+ * @param {string} params.systemPrompt First-attempt system prompt (defaults to the TypeScript SYSTEM_PROMPT; the Python path supplies a neutral, Python-appropriate one)
+ * @param {boolean} params.useMcp Whether to wire the code-index MCP server (defaults true; the Python path passes false — the index has no Python coverage)
  * @returns {Promise<ClaudeValidationResponse>} Parsed validation decision
  *
  * @sideeffects Executes Claude CLI subprocess, writes/deletes temp files, reads/writes session store
@@ -374,8 +376,10 @@ export async function executeClaudeHeadless(params: {
   prompt: string;
   isRetry: boolean;
   timeoutMs?: number;
+  systemPrompt?: string;
+  useMcp?: boolean;
 }): Promise<ClaudeValidationResponse> {
-  const { outerSessionId, filePath, prompt, isRetry, timeoutMs = 30000 } = params;
+  const { outerSessionId, filePath, prompt, isRetry, timeoutMs = 30000, systemPrompt = SYSTEM_PROMPT, useMcp = true } = params;
   const sessionKey = `${outerSessionId}:${filePath}`;
   const overallStart = Date.now();
 
@@ -387,11 +391,11 @@ export async function executeClaudeHeadless(params: {
 
   if (existingSession) {
     log(`  [HEADLESS] Resuming session ${existingSession.headlessSessionId} (attempt #${existingSession.attemptCount + 1})`);
-    return executeWithResume(existingSession.headlessSessionId, prompt, sessionKey, existingSession.attemptCount, timeoutMs, overallStart);
+    return executeWithResume(existingSession.headlessSessionId, prompt, sessionKey, existingSession.attemptCount, timeoutMs, overallStart, useMcp);
   }
 
   log(`  [HEADLESS] First attempt for ${sessionKey}`);
-  return executeFirstAttempt(prompt, sessionKey, timeoutMs, overallStart);
+  return executeFirstAttempt(prompt, sessionKey, timeoutMs, overallStart, systemPrompt, useMcp);
 }
 
 /**
@@ -403,6 +407,8 @@ export async function executeClaudeHeadless(params: {
  * @param {string} sessionKey The session store key ({outerSessionId}:{filePath})
  * @param {number} timeoutMs Timeout in milliseconds
  * @param {number} overallStart Start timestamp for timing logs
+ * @param {string} systemPrompt System prompt passed to the CLI (the TypeScript SYSTEM_PROMPT, or the Python path's neutral one)
+ * @param {boolean} useMcp Whether to wire the code-index MCP server (false for Python — the index has no Python coverage)
  * @returns {Promise<ClaudeValidationResponse>} Parsed validation decision
  *
  * @sideeffects Executes Claude CLI subprocess via execFileSync, writes session store
@@ -414,16 +420,18 @@ async function executeFirstAttempt(
   prompt: string,
   sessionKey: string,
   timeoutMs: number,
-  overallStart: number
+  overallStart: number,
+  systemPrompt: string,
+  useMcp: boolean
 ): Promise<ClaudeValidationResponse> {
   try {
     log(`  [HEADLESS] Starting first attempt with ${timeoutMs}ms timeout...`);
-    const mcpConfig = getMcpConfigPath();
+    const mcpConfig = useMcp ? getMcpConfigPath() : null;
     if (mcpConfig) log(`  [HEADLESS] MCP config available at ${mcpConfig}`);
 
     const cliArgs = [
       '-p', prompt,
-      '--system-prompt', SYSTEM_PROMPT,
+      '--system-prompt', systemPrompt,
       '--output-format', 'json',
       '--permission-mode', 'bypassPermissions',
       '--model', 'opus',
@@ -473,6 +481,7 @@ async function executeFirstAttempt(
  * @param {number} previousAttemptCount Number of previous attempts
  * @param {number} timeoutMs Timeout in milliseconds
  * @param {number} overallStart Start timestamp for timing logs
+ * @param {boolean} useMcp Whether to wire the code-index MCP server (false for Python — the resumed session inherits its neutral first-attempt system prompt)
  * @returns {Promise<ClaudeValidationResponse>} Parsed validation decision
  *
  * @sideeffects Executes Claude CLI subprocess via execFileSync, updates session store
@@ -486,11 +495,12 @@ async function executeWithResume(
   sessionKey: string,
   previousAttemptCount: number,
   timeoutMs: number,
-  overallStart: number
+  overallStart: number,
+  useMcp: boolean
 ): Promise<ClaudeValidationResponse> {
   try {
     log(`  [HEADLESS] Resuming session ${headlessSessionId} (attempt #${previousAttemptCount + 1})...`);
-    const mcpConfig = getMcpConfigPath();
+    const mcpConfig = useMcp ? getMcpConfigPath() : null;
 
     const cliArgs = [
       '--resume', headlessSessionId,
@@ -1007,9 +1017,16 @@ Re-validate and return the JSON result. Be explicit about which previous violati
 
 // ─── Python Prompt Builders ──────────────────────────────────────────────────
 
+// Neutral system prompt for the Python validation path. Passed as the CLI
+// --system-prompt for .py edits INSTEAD of the TypeScript SYSTEM_PROMPT, whose
+// JSDoc mandates, "err toward deny", and code-index queries are all wrong for
+// Python and were fighting the (self-contained) Python user prompt. This one
+// defers to the user prompt and disclaims the TS/JSDoc + code-index assumptions.
+export const PY_SYSTEM_PROMPT = `You are a code-quality reviewer for Python edits. The user message is fully self-contained — it states the project's Python conventions, the deterministic tool findings, the code under review, and the exact allow/deny criteria and JSON-only response format. Follow it precisely. Do NOT apply TypeScript or JSDoc expectations, do NOT require @param/@returns-style tags, and do NOT assume a semantic code index is available (there is none for Python). Respond with ONLY the raw JSON object the user message specifies — no markdown, no code fences, no extra text.`;
+
 /**
  * @what The JSON-only response contract shared by every Python validation prompt, copied verbatim from SYSTEM_PROMPT's "Your response must be ONLY a JSON object" line and its "## Output Format" JSON structure
- * @how A plain string constant embedded at the end of both Python prompt builders — unlike the TypeScript path, the Python path has no separate system prompt, so this contract must travel inside the user prompt itself
+ * @how A plain string constant embedded at the end of both Python prompt builders. The Python path runs under a neutral system prompt (PY_SYSTEM_PROMPT); this contract still travels inside the self-contained user prompt so the response shape is guaranteed regardless of the system prompt
  * @why parseClaudeOutput (~line 604) requires a `decision` field and a `violations` array on the parsed JSON; reusing the exact TS wording keeps both paths compatible with the same parser and prevents the Python path from drifting into a differently-shaped response
  */
 const PY_RESPONSE_CONTRACT = `Your response must be ONLY a JSON object — no markdown, no explanation text, no code blocks. Just the raw JSON.
@@ -1194,7 +1211,7 @@ function formatPyUnits(functions: ExtractedFunction[], classes: ExtractedClass[]
 
 /**
  * @what Builds the full first-attempt validation prompt for a proposed Python edit
- * @how Assembles the pragmatic Python convention, the deterministic ruff/pydoclint findings, the local doc-completeness violations, the module metadata, the proposed functions/classes as UNITS, the NO-INDEX and WARN-NOT-DENY notices, an optional syntax-note, and the shared JSON-only response contract into one prompt string. Unlike the TypeScript path, there is no separate system prompt for Python — everything the model needs lives in this single string.
+ * @how Assembles the pragmatic Python convention, the deterministic ruff/pydoclint findings, the local doc-completeness violations, the module metadata, the proposed functions/classes as UNITS, the NO-INDEX and WARN-NOT-DENY notices, an optional syntax-note, and the shared JSON-only response contract into one prompt string. The Python path runs under a neutral system prompt (PY_SYSTEM_PROMPT); everything substantive — convention, findings, criteria, and the response contract — lives in this single user-prompt string.
  * @why The Python validation path has no code index coverage and must bias toward allow-with-suggestion (pyright/ruff run in CI, not here) — this prompt carries both constraints explicitly so headless Claude doesn't apply the stricter TypeScript decision logic to Python edits
  *
  * @param {object} context Validation context for the proposed Python edit
