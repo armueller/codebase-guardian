@@ -141,18 +141,26 @@ def _resolve_callee(script, line: int, col: int, root_abs: str) -> str | None:
     one bad call site never aborts the file.
     """
     try:
+        # Everything here — including `.module_path`, which does further lazy
+        # inference internally and can itself raise — must stay inside this
+        # one try/except. A prior version only wrapped `goto()`; a raise from
+        # `.module_path` on a single flaky call would otherwise escape this
+        # function, abort the whole `for file_path in files:` loop in
+        # `build_callgraph`, and get caught only by __main__.py's last-resort
+        # handler — which discards every edge collected so far, not just the
+        # one bad call. See task-p3.1 fix report.
         defs = script.goto(line, col, follow_imports=True)
+        if not defs:
+            return None
+        module_path = defs[0].module_path
+        if module_path is None:
+            return None
+        module_path = str(module_path)
+        if not _is_within(module_path, root_abs):
+            return None
+        return module_path
     except Exception:
         return None
-    if not defs:
-        return None
-    module_path = defs[0].module_path
-    if module_path is None:
-        return None
-    module_path = str(module_path)
-    if not _is_within(module_path, root_abs):
-        return None
-    return module_path
 
 
 def _is_within(path: str, root: str) -> bool:

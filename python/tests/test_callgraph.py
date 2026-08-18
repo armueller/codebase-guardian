@@ -86,3 +86,34 @@ def test_callgraph_nonexistent_root_still_exit_zero():
     assert proc.returncode == 0
     payload = json.loads(proc.stdout)
     assert payload["edges"] == []
+
+
+class _RaisingModulePathDefinition:
+    """Stands in for a Jedi `Definition` whose `.module_path` raises.
+
+    Jedi's `Definition.module_path` does further lazy inference internally
+    and can raise on its own, independent of `Script.goto()` itself
+    succeeding — this reproduces exactly that failure mode.
+    """
+
+    @property
+    def module_path(self):
+        raise RuntimeError("simulated Jedi internal failure")
+
+
+class _StubScriptRaisesOnModulePathAccess:
+    def goto(self, line, col, follow_imports=True):  # noqa: ARG002 - stub signature
+        return [_RaisingModulePathDefinition()]
+
+
+def test_resolve_callee_swallows_exception_from_module_path_access():
+    # Regression test: `_resolve_callee` must wrap the ENTIRE resolution body
+    # (goto + `.module_path` access + str() + containment check) in one
+    # try/except, not just `goto()`. A `.module_path` raise here previously
+    # escaped `_resolve_callee`, aborted the whole file loop in
+    # `build_callgraph`, and got caught only by __main__.py's last-resort
+    # handler — discarding every edge collected so far, not just this call.
+    from guardian_py.callgraph import _resolve_callee
+
+    result = _resolve_callee(_StubScriptRaisesOnModulePathAccess(), 1, 0, PKG)
+    assert result is None
