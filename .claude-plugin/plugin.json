@@ -1,8 +1,8 @@
 {
   "name": "codebase-guardian",
   "displayName": "Codebase Guardian",
-  "version": "0.3.1",
-  "description": "Semantic code index + automated edit-validation for TypeScript codebases. Blocks duplicate code (DRY), enforces JSDoc completeness, and keeps edits aligned with your project's patterns.",
+  "version": "0.4.0",
+  "description": "Semantic code index + automated edit-validation for TypeScript and Python codebases. Blocks duplicate code (DRY), enforces doc completeness, and keeps edits aligned with your project's patterns.",
   "author": {
     "name": "Austin Mueller",
     "url": "https://github.com/armueller"
@@ -17,6 +17,7 @@
     "validation",
     "semantic-search",
     "typescript",
+    "python",
     "code-index",
     "pretooluse"
   ]

@@ -6,9 +6,9 @@
     {
       "name": "codebase-guardian",
       "source": "./",
-      "description": "Semantic code index + automated edit-validation hooks for TypeScript codebases (DRY, JSDoc, pattern consistency).",
+      "description": "Semantic code index + automated edit-validation hooks for TypeScript and Python codebases (DRY, doc completeness, pattern consistency).",
       "category": "code-quality",
-      "tags": ["code-quality", "dry", "jsdoc", "validation", "typescript"]
+      "tags": ["code-quality", "dry", "jsdoc", "validation", "typescript", "python"]
     }
   ]
 }

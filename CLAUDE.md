@@ -138,9 +138,11 @@ Two separate caching mechanisms with **different hash semantics** — getting th
 
 ## User-Level File Locations
 
+`getGuardianHome()` resolves the root: `${CLAUDE_PLUGIN_DATA}` under the installed plugin, or `~/.codebase-guardian/` as the dev/fallback. Layout (shown at the fallback root):
+
 ```
-~/.codebase-guardian/
-├── source/                          # Installed source (synced by update.sh)
+~/.codebase-guardian/            # or ${CLAUDE_PLUGIN_DATA} under the plugin
+├── app/                             # Built engine — dist + node_modules + python + pyenv (synced by scripts/build.sh; plugin only)
 ├── indexes/{project-hash}/          # Per-project SQLite databases
 │   ├── code-quality.db
 │   ├── .validation-cache.json       # Result cache
