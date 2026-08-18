@@ -213,7 +213,13 @@ export async function validatePythonEdit(
         filePath,
         prompt,
         isRetry,
-        timeoutMs: 120000,
+        // Generous ceiling: with no Python code index yet, the validator uses its own
+        // tools to explore sibling modules for cross-file DRY/pattern. That is
+        // non-deterministic — usually a single ~25-40s turn, occasionally a multi-turn
+        // exploration that runs minutes. We allow up to 5 min so those explorations
+        // complete rather than fail-open; anything slower still fails open. (Phase 3's
+        // semantic index replaces this ad-hoc exploration with fast pre-injected context.)
+        timeoutMs: 300000,
         // Python gets a neutral system prompt (not the TS JSDoc/"err-toward-deny" one)
         // and no code-index MCP — the index has no Python coverage.
         systemPrompt: PY_SYSTEM_PROMPT,
