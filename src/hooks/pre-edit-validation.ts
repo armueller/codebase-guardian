@@ -42,8 +42,26 @@ import {
 import { getSession, setDenialInfo, clearSession as clearSessionEntry } from './helpers/validation-sessions.js';
 import { shouldStandDown } from './helpers/circuit-breaker.js';
 import { shouldSkipValidation } from './helpers/skip-validation.js';
+import { validatePythonEdit } from './helpers/py-validate.js';
 import crypto from 'crypto';
 import { resolveConfig, ensureDirectories } from '../config.js';
+
+/**
+ * @what Determines whether a file path is a Python source file
+ * @how Lower-cases the path and checks for a trailing `.py` extension
+ * @why validateEdit dispatches Python files to the dedicated validatePythonEdit path instead of the ts-morph pipeline
+ *
+ * @param {string} fp Absolute path to the file being edited
+ * @returns {boolean} True if the file is a `.py` source
+ *
+ * @sideeffects None
+ * @systemlayer Filtering
+ * @domain file-filtering, language-detection, python-support
+ * @tags language-detection, python, filtering, extension-check
+ */
+function isPythonFile(fp: string): boolean {
+  return fp.toLowerCase().endsWith('.py');
+}
 
 // Logging
 const hookConfig = resolveConfig();
@@ -129,17 +147,24 @@ async function main() {
 }
 
 /**
- * @what Validates an edit operation against the code index and headless Claude
- * @how Extracts functions, runs local JSDoc checks, checks cache, gathers code index context, executes headless Claude with session resume
- * @why Main validation logic — coordinates extraction, local checks, code index queries, and AI validation
+ * @what Validates an edit operation against the code index and headless Claude, or (for Python files)
+ *   delegates to the dedicated Python validation path
+ * @how Constructs post-edit file content, then dispatches `.py` files to validatePythonEdit
+ *   (its own guardian_py extraction + docstring-based flow, with no code index coverage). For
+ *   TypeScript files, continues: extracts functions, runs local JSDoc checks, checks cache, gathers
+ *   code index context, executes headless Claude with session resume
+ * @why Main validation logic — coordinates extraction, local checks, code index queries, and AI
+ *   validation for TypeScript; routes Python edits to a language-appropriate path instead of the
+ *   ts-morph pipeline, which cannot parse Python
  *
  * @param {HookInput} input Edit operation to validate
  * @returns {Promise<HookResponse>} Validation decision (allow/deny with violations)
  *
- * @sideeffects Executes headless Claude, reads code index DB, reads/writes cache and session store, logs
+ * @sideeffects Executes headless Claude, reads code index DB (TypeScript path) or spawns Python
+ *   subprocesses (Python path), reads/writes cache and session store, logs
  * @systemlayer Validation Logic
- * @domain validation-orchestration, code-quality-workflow
- * @tags validation-flow, function-extraction, code-index, ai-validation, session-resume
+ * @domain validation-orchestration, code-quality-workflow, python-support
+ * @tags validation-flow, function-extraction, code-index, ai-validation, session-resume, python-dispatch
  */
 async function validateEdit(input: HookInput): Promise<HookResponse> {
   const startTime = Date.now();
@@ -171,6 +196,15 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
     fullFileContent = newString;
   }
   log(`[TIMING] Read file: ${Date.now() - t1}ms (${fullFileContent.length} chars)`);
+
+  // Python edits are dispatched to their own self-contained validation path — see
+  // py-validate.ts. It mirrors this function's cache/session/circuit-breaker/headless
+  // scaffolding but substitutes guardian_py extraction + Python-specific prompts for
+  // the ts-morph pieces below, since Python has no code index coverage and uses
+  // docstrings rather than JSDoc.
+  if (isPythonFile(filePath)) {
+    return await validatePythonEdit(input, fullFileContent, currentFileOnDisk, startTime);
+  }
 
   // ── Step 1b: Check for syntax errors in post-edit file ──
   // Track syntax errors but don't bail out — validation should still run on whatever

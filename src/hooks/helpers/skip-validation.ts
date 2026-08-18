@@ -1,7 +1,7 @@
 /**
  * @what Decides which files the PreToolUse validation hook will run on
  * @how Allow-lists the file extensions the extraction pipeline can actually parse, and applies path-based skips for infrastructure/secret files that must never be validated regardless of extension
- * @why The extraction pipeline (ts-morph, JSDoc, TS syntax check) is TypeScript-only. Running it on other languages — e.g. Python — mangles them: the TS parser emits spurious syntax errors, extracts zero functions, and the code index has no siblings for them, which produced false denials on RMWM2's `ml/` tree. An allow-list means unsupported languages are cleanly skipped until a real extraction path exists, instead of the previous deny-list which validated anything it did not explicitly exclude.
+ * @why The ts-morph/JSDoc extraction pipeline (validateEdit) is TypeScript-only. Running it on other languages — e.g. Python — mangles them: the TS parser emits spurious syntax errors, extracts zero functions, and the code index has no siblings for them, which produced false denials on RMWM2's `ml/` tree. An allow-list means unsupported languages are cleanly skipped until a real extraction path exists, instead of the previous deny-list which validated anything it did not explicitly exclude. Python (`.py`) is now supported via a dedicated adapter — the guardian_py extractor (py-adapter.ts) reached through validatePythonEdit (py-validate.ts) — so it is allow-listed here without going through the TS-only pipeline.
  *
  * @sideeffects None
  * @systemlayer Filtering
@@ -14,13 +14,19 @@ import path from 'path';
 /**
  * @what File extensions the validation pipeline can actually parse and extract
  * @how A set of lower-cased extensions (including the leading dot) matched against `path.extname`
- * @why The pipeline is ts-morph based, so only TypeScript sources produce meaningful extraction and index context. Adding a language means adding its extension here AND a matching extraction dispatch — never one without the other, or that language reproduces the Python breakage this allow-list fixed.
+ * @why TypeScript sources go through the ts-morph pipeline (validateEdit) for meaningful extraction and
+ *   index context. Python sources (`.py`) are dispatched to a dedicated extraction path — the guardian_py
+ *   adapter (py-adapter.ts) via validatePythonEdit (py-validate.ts) — rather than the ts-morph pipeline.
+ *   Adding a language means adding its extension here AND a matching extraction dispatch — never one
+ *   without the other, or that language reproduces the Python breakage this allow-list originally fixed.
+ *   `.py` is safe to enable globally because validatePythonEdit fails open (allows) whenever the guardian
+ *   Python tooling is absent — see py-adapter.ts's 'unavailable' sentinel.
  *
  * @systemlayer Filtering
  * @domain file-filtering, language-support
- * @tags allow-list, extensions, supported-languages
+ * @tags allow-list, extensions, supported-languages, python
  */
-export const VALIDATABLE_EXTENSIONS = new Set<string>(['.ts', '.tsx']);
+export const VALIDATABLE_EXTENSIONS = new Set<string>(['.ts', '.tsx', '.py']);
 
 /**
  * @what Path patterns skipped even when the file's extension is otherwise validatable

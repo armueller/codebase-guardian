@@ -13,9 +13,15 @@ describe('shouldSkipValidation (allow-list)', () => {
     assert.equal(shouldSkipValidation('/repo/app/foo.test.ts'), false);
   });
 
-  it('skips unsupported languages so they are not mangled by the TS parser', () => {
-    // The regression that motivated the allow-list: Python files in RMWM2's ml/ tree.
-    assert.equal(shouldSkipValidation('/repo/ml/labelgen/marking.py'), true);
+  it('validates Python sources now that the guardian_py extraction path exists', () => {
+    // Python got its own extractor (py-adapter.ts) wired into a dedicated
+    // validation path (py-validate.ts), so .py is no longer routed through the
+    // TS-only pipeline this allow-list originally guarded against.
+    assert.equal(shouldSkipValidation('/repo/ml/labelgen/marking.py'), false);
+  });
+
+  it('still skips unsupported languages so they are not mangled by the TS parser', () => {
+    // .pyi stub files have no guardian_py extraction path (yet) — still skipped.
     assert.equal(shouldSkipValidation('/repo/ml/models.pyi'), true);
     // Other unsupported languages the deny-list would have wrongly validated.
     assert.equal(shouldSkipValidation('/repo/src/app.js'), true);
@@ -45,12 +51,12 @@ describe('shouldSkipValidation (allow-list)', () => {
 
   it('is case-insensitive on the extension', () => {
     assert.equal(shouldSkipValidation('/repo/app/Foo.TS'), false);
-    assert.equal(shouldSkipValidation('/repo/app/Foo.PY'), true);
+    assert.equal(shouldSkipValidation('/repo/app/Foo.PY'), false);
   });
 
-  it('does not yet include Python — added only when a Python extractor exists', () => {
-    // Guards against adding .py to the allow-list without a matching extraction path,
-    // which would reintroduce the TS-parser-on-Python breakage.
-    assert.equal(VALIDATABLE_EXTENSIONS.has('.py'), false);
+  it('includes Python now that a matching Python extraction path exists', () => {
+    // .py is only safe in this allow-list because py-validate.ts dispatches it
+    // to the guardian_py extractor instead of the TS-only pipeline.
+    assert.equal(VALIDATABLE_EXTENSIONS.has('.py'), true);
   });
 });
