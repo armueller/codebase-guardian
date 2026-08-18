@@ -27,6 +27,8 @@ import {
   buildFirstAttemptPrompt,
   buildRetryPrompt
 } from './helpers/claude-headless.js';
+import { describeEditScope } from './helpers/edit-scope.js';
+import { recordDecision } from './helpers/metrics.js';
 import {
   buildPatternContext,
   isIndexAvailable,
@@ -44,24 +46,33 @@ import { shouldStandDown } from './helpers/circuit-breaker.js';
 import { shouldSkipValidation, isPythonFile, requiresCodeIndex } from './helpers/skip-validation.js';
 import { validatePythonEdit } from './helpers/py-validate.js';
 import crypto from 'crypto';
-import { resolveConfig, ensureDirectories } from '../config.js';
+import { resolveConfig, ensureDirectories, hashProjectRoot } from '../config.js';
 
 // Logging
 const hookConfig = resolveConfig();
 ensureDirectories(hookConfig);
 const LOG_PATH = hookConfig.logPath;
 
+// Accumulates the fields for the single decision this invocation will record into the metrics
+// store. The hook is a short-lived, single-shot process (one invocation per node process), so a
+// module-scoped record is safe — it is never shared across concurrent decisions.
+const metricCtx: {
+  filePath?: string; projectHash?: string; projectName?: string; projectRoot?: string;
+  toolName?: string; sessionId?: string; isRetry?: boolean; attemptCount?: number;
+  wasCached?: boolean; headlessRan?: boolean; headlessMs?: number; validationStart: number;
+} = { validationStart: Date.now() };
+
 /**
  * @what Main entry point for the pre-edit validation hook
- * @how Parses the stdin HookInput, filters to Edit/Write, sets project context from the edited file, applies the skip-list, gates on TS code-index availability (Python bypasses this gate), runs validateEdit (which dispatches TypeScript vs Python), writes the allow/deny decision, and fails open on any error
+ * @how Parses the stdin HookInput, filters to Edit/Write, resolves the edited file's project (for per-project metrics), sets project context, applies the skip-list, gates on TS code-index availability (Python bypasses this gate), runs validateEdit (which dispatches TypeScript vs Python), emits the allow/deny decision (recorded to the metrics store on exit), and fails open on any error
  * @why Claude Code executes this hook before Edit/Write operations to enforce code quality
  *
  * @returns {Promise<void>} Resolves once the allow/deny decision has been written to stdout and process.exitCode set
  *
- * @sideeffects Reads stdin, sets project context, executes validation (may spawn headless Claude), writes to the validation debug log, writes the decision JSON to stdout, sets process.exitCode (never calls process.exit, per the Exit Discipline invariant)
+ * @sideeffects Reads stdin, resolves the edited file's project config, sets project context, mutates the module-scoped metrics context, executes validation (may spawn headless Claude), writes to the validation debug log, writes the decision JSON to stdout, sets process.exitCode (never calls process.exit, per the Exit Discipline invariant)
  * @systemlayer Hook Entry
- * @domain hook-execution, validation-orchestration, fail-open
- * @tags hook-main, entry-point, validation-flow, fail-open, python-bypass
+ * @domain hook-execution, validation-orchestration, fail-open, metrics
+ * @tags hook-main, entry-point, validation-flow, fail-open, python-bypass, metrics
  */
 async function main() {
   try {
@@ -87,6 +98,18 @@ async function main() {
     }
 
     const filePath = hookInput.tool_input.file_path || '';
+
+    // Record metrics against the EDITED FILE's project (not cwd), so per-project metrics stay
+    // correct even when a session edits files in another repo.
+    metricCtx.toolName = hookInput.tool_name;
+    metricCtx.sessionId = hookInput.session_id;
+    metricCtx.filePath = filePath;
+    if (filePath) {
+      const fileConfig = resolveConfig(filePath);
+      metricCtx.projectName = fileConfig.projectName;
+      metricCtx.projectRoot = fileConfig.projectRoot;
+      metricCtx.projectHash = hashProjectRoot(fileConfig.projectRoot);
+    }
 
     // Set project context from the file being edited (handles submodules/monorepos
     // where the file's project root may differ from cwd)
@@ -342,6 +365,7 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
   const cacheKey = generateCacheKey(filePath, oldString, newString);
   const cachedResult = getCachedValidation(cacheKey);
   if (cachedResult) {
+    metricCtx.wasCached = true;
     log(`[TIMING] Cache hit: ${Date.now() - t5}ms`);
     log(`[CACHE] Returning cached result: ${cachedResult.decision}`);
     return {
@@ -380,6 +404,8 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
   }
 
   const isRetry = existingSession !== null;
+  metricCtx.isRetry = isRetry;
+  metricCtx.attemptCount = existingSession?.attemptCount ?? 0;
   log(`[SESSION] ${isRetry ? `Retry attempt #${existingSession!.attemptCount + 1} (session: ${existingSession!.headlessSessionId})` : 'First attempt'}`);
 
   // ── Circuit breaker: uphold "never permanently block work" ──
@@ -419,6 +445,10 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
 
   // ── Step 8: Build prompt ──
 
+  // Ground the validator in exactly what this edit changed, so it doesn't flag
+  // unchanged nested code in a partially-edited large function (see edit-scope.ts).
+  const editScope = describeEditScope({ isNewFile, oldString, newString, currentFileOnDisk, newContent: fullFileContent });
+
   let prompt: string;
 
   if (isRetry) {
@@ -429,7 +459,8 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
       extractedFunctions,
       extractedTypes,
       jsdocViolations,
-      typeJsdocViolations
+      typeJsdocViolations,
+      editScope
     });
     log(`[TIMING] Build retry prompt: ${Date.now() - t7}ms (${prompt.length} chars)`);
   } else {
@@ -463,6 +494,7 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
       fullFileContent: isNewFile ? fullFileContent : undefined,
       deletedFunctions: usage.deleted.length > 0 ? usage.deleted : undefined,
       syntaxErrors: syntaxErrors.length > 0 ? syntaxErrors : undefined,
+      editScope,
     });
     log(`[TIMING] Build first-attempt prompt: ${Date.now() - t8}ms (${prompt.length} chars)`);
   }
@@ -479,6 +511,8 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
       isRetry,
       timeoutMs: 120000
     });
+    metricCtx.headlessRan = true;
+    metricCtx.headlessMs = Date.now() - t9;
     log(`[TIMING] Headless Claude execution: ${Date.now() - t9}ms`);
     log(`Decision: ${validationResult.decision}`);
     log(`Reasoning: ${validationResult.reasoning}`);
@@ -621,21 +655,22 @@ function log(message: string): void {
 // pool down cleanly (exit 0). Every caller in main() must `return` after these.
 
 /**
- * @what Emits an allow decision and lets the hook exit naturally
- * @how Writes the allow JSON to stdout and sets process.exitCode = 0 (no process.exit — see Exit Discipline above)
+ * @what Emits an allow decision, records it to the metrics store, and lets the hook exit naturally
+ * @how Records the decision, writes the allow JSON to stdout, and sets process.exitCode = 0 (no process.exit — see Exit Discipline above)
  * @why Allowing the edit must not force process.exit(), which aborts on onnxruntime thread teardown
  *
  * @param {string} message Optional success message
  * @param {string[]} suggestions Optional non-blocking suggestions
  * @returns {void}
  *
- * @sideeffects Writes to stdout, sets process.exitCode
+ * @sideeffects Records a metrics row, writes to stdout, sets process.exitCode
  * @systemlayer Exit Handler
- * @domain hook-response, natural-exit
- * @tags exit-handler, allow-decision, stdout-output, natural-exit, success-path
+ * @domain hook-response, natural-exit, metrics
+ * @tags exit-handler, allow-decision, stdout-output, natural-exit, metrics
  */
 function allowAndExit(message?: string, suggestions?: string[]): void {
   log(`ALLOW: ${message || 'Edit allowed'}`);
+  recordDecision({ ...metricCtx, decision: 'allow', message, numSuggestions: suggestions?.length ?? 0, validationMs: Date.now() - metricCtx.validationStart });
   const response: Record<string, unknown> = { action: 'allow', message };
   if (suggestions && suggestions.length > 0) {
     response.suggestions = suggestions;
@@ -646,8 +681,8 @@ function allowAndExit(message?: string, suggestions?: string[]): void {
 }
 
 /**
- * @what Emits a blocking deny decision and lets the hook exit naturally
- * @how Writes the PreToolUse deny envelope to stdout and sets process.exitCode = 0 (no process.exit — see Exit Discipline above)
+ * @what Emits a blocking deny decision, records it to the metrics store, and lets the hook exit naturally
+ * @how Records the decision, writes the PreToolUse deny envelope to stdout, and sets process.exitCode = 0 (no process.exit — see Exit Discipline above)
  * @why Blocks the edit with detailed feedback; must not process.exit(), which aborts on onnxruntime thread teardown
  *
  * @param {string} message Error message
@@ -655,16 +690,17 @@ function allowAndExit(message?: string, suggestions?: string[]): void {
  * @param {string[]} suggestions Optional non-blocking suggestions
  * @returns {void}
  *
- * @sideeffects Writes the deny decision to stdout, sets process.exitCode
+ * @sideeffects Records a metrics row, writes the deny decision to stdout, sets process.exitCode
  * @systemlayer Exit Handler
- * @domain hook-response, natural-exit
- * @tags exit-handler, deny-decision, stdout-output, natural-exit, block-edit
+ * @domain hook-response, natural-exit, metrics
+ * @tags exit-handler, deny-decision, stdout-output, natural-exit, metrics
  */
 function denyAndExit(message: string, violations?: string[], suggestions?: string[]): void {
   log(`DENY: ${message}`);
   if (violations) {
     log(`Violations:\n${violations.join('\n')}`);
   }
+  recordDecision({ ...metricCtx, decision: 'deny', message, violations, numSuggestions: suggestions?.length ?? 0, validationMs: Date.now() - metricCtx.validationStart });
 
   let reason = violations ? `${message}\n\n${violations.join('\n')}` : message;
   if (suggestions && suggestions.length > 0) {

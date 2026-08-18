@@ -5,10 +5,11 @@
   "type": "module",
   "main": "dist/mcp-server/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-assets.mjs",
     "dev": "tsc --watch",
     "start": "node dist/mcp-server/index.js",
     "build-index": "node dist/mcp-server/build-index.js",
+    "metrics": "node dist/mcp-server/metrics-report.js",
     "test": "npx tsx --test tests/**/*.test.ts",
     "test:mcp": "npx tsx --test tests/db.test.ts tests/indexer.test.ts",
     "test:hooks": "npx tsx --test tests/code-analyzer.test.ts tests/jsdoc-parser.test.ts tests/claude-headless.test.ts tests/code-index-client.test.ts tests/skip-validation.test.ts"
