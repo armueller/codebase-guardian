@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { validatePythonEdit } from '../src/hooks/helpers/py-validate.js';
+import { validatePythonEdit, extractPythonComments } from '../src/hooks/helpers/py-validate.js';
 import type { HookInput } from '../src/hooks/helpers/types.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -48,5 +48,47 @@ describe('validatePythonEdit (fail-open early returns)', () => {
     const result = await validatePythonEdit(input, content, '', Date.now());
     assert.equal(result.action, 'allow');
     assert.match(result.message ?? '', /partial|intermediate/i);
+  });
+});
+
+// ─── extractPythonComments ───────────────────────────────────────────────────
+//
+// Feeds buildPatternContext's step-level DRY comment search (mirrors extractInlineComments'
+// role for the TypeScript path — see code-index-client.test.ts for that extractor's tests).
+
+describe('extractPythonComments', () => {
+  it('extracts a standalone `#` comment line', () => {
+    const result = extractPythonComments('# calculate total price\nx = compute(y)\n');
+    assert.deepEqual(result, ['calculate total price']);
+  });
+
+  it('extracts a trailing `# ...` comment after code (unlike the TS // extractor)', () => {
+    const result = extractPythonComments('total = price * count  # apply quantity multiplier\n');
+    assert.deepEqual(result, ['apply quantity multiplier']);
+  });
+
+  it('extracts one comment per line for multiple commented lines', () => {
+    const source = '# step one: validate input\nvalidate(x)\n# step two: persist result\nsave(x)\n';
+    const result = extractPythonComments(source);
+    assert.deepEqual(result, ['step one: validate input', 'step two: persist result']);
+  });
+
+  it('ignores lines with no comment', () => {
+    const result = extractPythonComments('x = 1\ny = 2\n');
+    assert.deepEqual(result, []);
+  });
+
+  it('filters comments shorter than 5 characters', () => {
+    const result = extractPythonComments('# ok\n');
+    assert.deepEqual(result, []);
+  });
+
+  it('keeps comments exactly 5 characters', () => {
+    const result = extractPythonComments('# hello\n');
+    assert.deepEqual(result, ['hello']);
+  });
+
+  it('handles empty input', () => {
+    assert.deepEqual(extractPythonComments(''), []);
   });
 });

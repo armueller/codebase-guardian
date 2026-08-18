@@ -362,7 +362,8 @@ Your response must still be ONLY a JSON object — any tool calls happen before 
  * @param {boolean} params.isRetry Whether this is a retry (has existing headless session)
  * @param {number} params.timeoutMs Timeout in milliseconds (default 30000)
  * @param {string} params.systemPrompt First-attempt system prompt (defaults to the TypeScript SYSTEM_PROMPT; the Python path supplies a neutral, Python-appropriate one)
- * @param {boolean} params.useMcp Whether to wire the code-index MCP server (defaults true; the Python path passes false — the index has no Python coverage)
+ * @param {boolean} params.useMcp Whether to wire the code-index MCP server (defaults true; both the TypeScript and Python paths use it now that the index covers Python)
+ * @param {string[]} [params.allowedTools] Restricts the headless agent to exactly these tool names via `--allowedTools` (e.g. the bounded read-only code-index MCP tools for the Python path). Omitted → no restriction, so under `--permission-mode bypassPermissions` all default tools (Read/Bash/Grep/Glob/etc.) remain available — this is the TypeScript path's unchanged behavior.
  * @returns {Promise<ClaudeValidationResponse>} Parsed validation decision
  *
  * @sideeffects Executes Claude CLI subprocess, writes/deletes temp files, reads/writes session store
@@ -378,8 +379,9 @@ export async function executeClaudeHeadless(params: {
   timeoutMs?: number;
   systemPrompt?: string;
   useMcp?: boolean;
+  allowedTools?: string[];
 }): Promise<ClaudeValidationResponse> {
-  const { outerSessionId, filePath, prompt, isRetry, timeoutMs = 30000, systemPrompt = SYSTEM_PROMPT, useMcp = true } = params;
+  const { outerSessionId, filePath, prompt, isRetry, timeoutMs = 30000, systemPrompt = SYSTEM_PROMPT, useMcp = true, allowedTools } = params;
   const sessionKey = `${outerSessionId}:${filePath}`;
   const overallStart = Date.now();
 
@@ -391,11 +393,11 @@ export async function executeClaudeHeadless(params: {
 
   if (existingSession) {
     log(`  [HEADLESS] Resuming session ${existingSession.headlessSessionId} (attempt #${existingSession.attemptCount + 1})`);
-    return executeWithResume(existingSession.headlessSessionId, prompt, sessionKey, existingSession.attemptCount, timeoutMs, overallStart, useMcp);
+    return executeWithResume(existingSession.headlessSessionId, prompt, sessionKey, existingSession.attemptCount, timeoutMs, overallStart, useMcp, allowedTools);
   }
 
   log(`  [HEADLESS] First attempt for ${sessionKey}`);
-  return executeFirstAttempt(prompt, sessionKey, timeoutMs, overallStart, systemPrompt, useMcp);
+  return executeFirstAttempt(prompt, sessionKey, timeoutMs, overallStart, systemPrompt, useMcp, allowedTools);
 }
 
 /**
@@ -408,7 +410,8 @@ export async function executeClaudeHeadless(params: {
  * @param {number} timeoutMs Timeout in milliseconds
  * @param {number} overallStart Start timestamp for timing logs
  * @param {string} systemPrompt System prompt passed to the CLI (the TypeScript SYSTEM_PROMPT, or the Python path's neutral one)
- * @param {boolean} useMcp Whether to wire the code-index MCP server (false for Python — the index has no Python coverage)
+ * @param {boolean} useMcp Whether to wire the code-index MCP server (both TypeScript and Python pass true now that the index covers Python)
+ * @param {string[]} [allowedTools] Restricts the headless agent to exactly these tool names via `--allowedTools`; omitted leaves all default tools available
  * @returns {Promise<ClaudeValidationResponse>} Parsed validation decision
  *
  * @sideeffects Executes Claude CLI subprocess via execFileSync, writes session store
@@ -422,7 +425,8 @@ async function executeFirstAttempt(
   timeoutMs: number,
   overallStart: number,
   systemPrompt: string,
-  useMcp: boolean
+  useMcp: boolean,
+  allowedTools?: string[]
 ): Promise<ClaudeValidationResponse> {
   try {
     log(`  [HEADLESS] Starting first attempt with ${timeoutMs}ms timeout...`);
@@ -438,6 +442,9 @@ async function executeFirstAttempt(
     ];
     if (mcpConfig) {
       cliArgs.push('--mcp-config', mcpConfig);
+    }
+    if (allowedTools && allowedTools.length > 0) {
+      cliArgs.push('--allowedTools', allowedTools.join(','));
     }
 
     const t2 = Date.now();
@@ -481,7 +488,8 @@ async function executeFirstAttempt(
  * @param {number} previousAttemptCount Number of previous attempts
  * @param {number} timeoutMs Timeout in milliseconds
  * @param {number} overallStart Start timestamp for timing logs
- * @param {boolean} useMcp Whether to wire the code-index MCP server (false for Python — the resumed session inherits its neutral first-attempt system prompt)
+ * @param {boolean} useMcp Whether to wire the code-index MCP server (the resumed session inherits its first-attempt system prompt regardless)
+ * @param {string[]} [allowedTools] Restricts the headless agent to exactly these tool names via `--allowedTools`; omitted leaves all default tools available. Passed again on resume so the bounded tool set is enforced for retries too, not just the first attempt.
  * @returns {Promise<ClaudeValidationResponse>} Parsed validation decision
  *
  * @sideeffects Executes Claude CLI subprocess via execFileSync, updates session store
@@ -496,7 +504,8 @@ async function executeWithResume(
   previousAttemptCount: number,
   timeoutMs: number,
   overallStart: number,
-  useMcp: boolean
+  useMcp: boolean,
+  allowedTools?: string[]
 ): Promise<ClaudeValidationResponse> {
   try {
     log(`  [HEADLESS] Resuming session ${headlessSessionId} (attempt #${previousAttemptCount + 1})...`);
@@ -511,6 +520,9 @@ async function executeWithResume(
     ];
     if (mcpConfig) {
       cliArgs.push('--mcp-config', mcpConfig);
+    }
+    if (allowedTools && allowedTools.length > 0) {
+      cliArgs.push('--allowedTools', allowedTools.join(','));
     }
 
     const t2 = Date.now();
@@ -686,6 +698,128 @@ function formatIndexedFunction(func: FunctionResult): string {
 }
 
 /**
+ * @what Renders every PatternContext field into its formatted prompt-section text, shared by both the TypeScript and Python first-attempt prompt builders
+ * @how Reuses formatIndexedFunction for each function-shaped row (siblings, similar, callers) and formats relevant docs, similar comments, README, and aggregated directory patterns into individual section strings. This is a straight extraction of buildFirstAttemptPrompt's original inline section-building code — the exact per-field formatting rules (placeholder text when empty, truncation, joins) are UNCHANGED so buildFirstAttemptPrompt's output stays byte-identical to before this helper existed
+ * @why buildPythonFirstAttemptPrompt now also needs to render sibling/similar/caller/doc/comment context (P3.5), and duplicating this formatting logic between the TS and Python builders would let the two silently diverge over time — factoring it into one shared helper in the same module means both builders always render PatternContext identically
+ *
+ * @param {PatternContext} patternContext Aggregated code index context for the edit
+ * @returns {object} One formatted string per PatternContext section, ready to interpolate into either prompt builder's template
+ *
+ * @sideeffects None
+ * @systemlayer Utility
+ * @domain prompt-formatting, context-assembly, code-quality
+ * @tags formatting, prompt-helper, pattern-context, shared, dry
+ */
+function formatPatternContextSections(patternContext: PatternContext): {
+  relevantDocsSection: string;
+  similarSection: string;
+  similarCommentsSection: string;
+  readmeSection: string;
+  siblingSection: string;
+  knownCalledSection: string;
+  unknownCalledSection: string;
+  callersSection: string;
+  patternsSection: string;
+} {
+  // ── Relevant project documentation ──
+  let relevantDocsSection = '';
+  if (patternContext.relevantDocs.length > 0) {
+    relevantDocsSection = patternContext.relevantDocs
+      .map(doc => {
+        let entry = `- **${doc.name}** (${doc.filePath})\n  Matched: domains=[${doc.matchedDomains.join(',')}] tags=[${doc.matchedTags.join(',')}]\n  ${doc.descriptionPreview}`;
+        if (doc.sections && doc.sections.length > 0) {
+          for (const section of doc.sections) {
+            entry += `\n  ### ${section.heading}\n  ${section.body}`;
+          }
+        }
+        return entry;
+      })
+      .join('\n\n');
+  }
+
+  // ── Similar existing functions (DRY enforcement) ──
+  let similarSection: string;
+  if (patternContext.similarExistingFunctions.size > 0) {
+    const entries: string[] = [];
+    for (const [funcName, similarFuncs] of patternContext.similarExistingFunctions) {
+      entries.push(`Similar functions found for "${funcName}":`);
+      for (const f of similarFuncs) {
+        entries.push(`  - ${formatIndexedFunction(f)}`);
+      }
+    }
+    similarSection = entries.join('\n');
+  } else {
+    similarSection = '(no similar functions found in the code index — likely genuinely new capability)';
+  }
+
+  // ── Similar inline comments (step-level DRY) ──
+  let similarCommentsSection = '';
+  if (patternContext.similarComments.length > 0) {
+    const entries: string[] = [];
+    for (const cm of patternContext.similarComments) {
+      entries.push(`Edit comment: "${cm.editComment}"`);
+      for (const m of cm.matches) {
+        entries.push(`  Similar in: ${m.functionName} (${m.filePath})`);
+        entries.push(`    Comment: "${m.commentText}"`);
+      }
+    }
+    similarCommentsSection = entries.join('\n');
+  }
+
+  // ── Directory README ──
+  const readmeSection = patternContext.directoryReadme
+    ? patternContext.directoryReadme
+    : '(No README found for this directory — skip README compliance check)';
+
+  // ── Sibling functions ──
+  const siblingSection = patternContext.siblingFunctions.length > 0
+    ? patternContext.siblingFunctions.slice(0, 20).map(f => `- ${formatIndexedFunction(f)}`).join('\n')
+    : '(no sibling functions found in directory)';
+
+  // ── Called functions from index ──
+  const knownCalledSection = patternContext.calledFunctionDetails.size > 0
+    ? Array.from(patternContext.calledFunctionDetails.values())
+        .map(f => `- ${formatIndexedFunction(f)}`)
+        .join('\n')
+    : '(none resolved from code index)';
+
+  const unknownCalledSection = patternContext.unknownCalledFunctions.length > 0
+    ? patternContext.unknownCalledFunctions.join(', ')
+    : '(all called functions resolved)';
+
+  // ── Callers (blast radius) ──
+  const callersSection = patternContext.callerDetails.size > 0
+    ? Array.from(patternContext.callerDetails.entries())
+        .map(([funcName, callers]) =>
+          `- ${funcName} is called by: ${callers.map(c => `${c.name} (${c.file_path})`).join(', ')}`
+        )
+        .join('\n')
+    : '(no callers found for modified functions)';
+
+  // ── Directory patterns ──
+  const patterns = patternContext.directoryPatterns;
+  const patternsSection = [
+    `Common domains: ${patterns.commonDomains.join(', ') || '(none)'}`,
+    `Common system layers: ${patterns.commonSystemLayers.join(', ') || '(none)'}`,
+    `Common tags: ${patterns.commonTags.join(', ') || '(none)'}`,
+    `Side effects in directory: ${patterns.hasSideEffects ? 'Yes (some functions have side effects)' : 'No (pure functions directory)'}`,
+    `Naming examples: ${patterns.namingExamples.join(', ') || '(none)'}`,
+  ].join('\n');
+
+  return {
+    relevantDocsSection,
+    similarSection,
+    similarCommentsSection,
+    readmeSection,
+    siblingSection,
+    knownCalledSection,
+    unknownCalledSection,
+    callersSection,
+    patternsSection,
+  };
+}
+
+/**
  * @what Builds the full first-attempt validation prompt with all code index context
  * @how Assembles extracted functions, code index context (README, siblings, similar functions, callers, patterns), and JSDoc issues
  * @why First attempt needs complete context — system prompt has the rules, this prompt has the data
@@ -769,95 +903,25 @@ ${type.fullCode}
       .join('\n\n---\n\n');
   }
 
-  // ── Relevant project documentation ──
-  let relevantDocsSection = '';
-  if (patternContext.relevantDocs.length > 0) {
-    relevantDocsSection = patternContext.relevantDocs
-      .map(doc => {
-        let entry = `- **${doc.name}** (${doc.filePath})\n  Matched: domains=[${doc.matchedDomains.join(',')}] tags=[${doc.matchedTags.join(',')}]\n  ${doc.descriptionPreview}`;
-        if (doc.sections && doc.sections.length > 0) {
-          for (const section of doc.sections) {
-            entry += `\n  ### ${section.heading}\n  ${section.body}`;
-          }
-        }
-        return entry;
-      })
-      .join('\n\n');
-  }
+  // ── Pattern context sections (README, siblings, similar, called, callers, docs, comments, patterns) ──
+  // Shared with buildPythonFirstAttemptPrompt via formatPatternContextSections — see that
+  // function's JSDoc for why this is factored out rather than duplicated.
+  const {
+    relevantDocsSection,
+    similarSection,
+    similarCommentsSection,
+    readmeSection,
+    siblingSection,
+    knownCalledSection,
+    unknownCalledSection,
+    callersSection,
+    patternsSection,
+  } = formatPatternContextSections(patternContext);
 
   // ── Deleted functions (excluded from DRY analysis) ──
   const deletedSection = context.deletedFunctions && context.deletedFunctions.length > 0
     ? `\n== FUNCTIONS BEING DELETED BY THIS EDIT ==\n\nThe following functions are being REMOVED from the file by this edit. Do NOT flag JSDoc issues, DRY violations, or any other problems with these functions — they will no longer exist after the edit lands:\n${context.deletedFunctions.map(name => `- ${name}`).join('\n')}\n\nIf a "similar existing function" from the code index matches one of these deleted function names, IGNORE it for DRY analysis — it is stale index data that will be cleaned up on the next index rebuild.\n`
     : '';
-
-  // ── Similar existing functions (DRY enforcement) ──
-  let similarSection: string;
-  if (patternContext.similarExistingFunctions.size > 0) {
-    const entries: string[] = [];
-    for (const [funcName, similarFuncs] of patternContext.similarExistingFunctions) {
-      entries.push(`Similar functions found for "${funcName}":`);
-      for (const f of similarFuncs) {
-        entries.push(`  - ${formatIndexedFunction(f)}`);
-      }
-    }
-    similarSection = entries.join('\n');
-  } else {
-    similarSection = '(no similar functions found in the code index — likely genuinely new capability)';
-  }
-
-  // ── Similar inline comments (step-level DRY) ──
-  let similarCommentsSection = '';
-  if (patternContext.similarComments.length > 0) {
-    const entries: string[] = [];
-    for (const cm of patternContext.similarComments) {
-      entries.push(`Edit comment: "${cm.editComment}"`);
-      for (const m of cm.matches) {
-        entries.push(`  Similar in: ${m.functionName} (${m.filePath})`);
-        entries.push(`    Comment: "${m.commentText}"`);
-      }
-    }
-    similarCommentsSection = entries.join('\n');
-  }
-
-  // ── Directory README ──
-  const readmeSection = patternContext.directoryReadme
-    ? patternContext.directoryReadme
-    : '(No README found for this directory — skip README compliance check)';
-
-  // ── Sibling functions ──
-  const siblingSection = patternContext.siblingFunctions.length > 0
-    ? patternContext.siblingFunctions.slice(0, 20).map(f => `- ${formatIndexedFunction(f)}`).join('\n')
-    : '(no sibling functions found in directory)';
-
-  // ── Called functions from index ──
-  const knownCalledSection = patternContext.calledFunctionDetails.size > 0
-    ? Array.from(patternContext.calledFunctionDetails.values())
-        .map(f => `- ${formatIndexedFunction(f)}`)
-        .join('\n')
-    : '(none resolved from code index)';
-
-  const unknownCalledSection = patternContext.unknownCalledFunctions.length > 0
-    ? patternContext.unknownCalledFunctions.join(', ')
-    : '(all called functions resolved)';
-
-  // ── Callers (blast radius) ──
-  const callersSection = patternContext.callerDetails.size > 0
-    ? Array.from(patternContext.callerDetails.entries())
-        .map(([funcName, callers]) =>
-          `- ${funcName} is called by: ${callers.map(c => `${c.name} (${c.file_path})`).join(', ')}`
-        )
-        .join('\n')
-    : '(no callers found for modified functions)';
-
-  // ── Directory patterns ──
-  const patterns = patternContext.directoryPatterns;
-  const patternsSection = [
-    `Common domains: ${patterns.commonDomains.join(', ') || '(none)'}`,
-    `Common system layers: ${patterns.commonSystemLayers.join(', ') || '(none)'}`,
-    `Common tags: ${patterns.commonTags.join(', ') || '(none)'}`,
-    `Side effects in directory: ${patterns.hasSideEffects ? 'Yes (some functions have side effects)' : 'No (pure functions directory)'}`,
-    `Naming examples: ${patterns.namingExamples.join(', ') || '(none)'}`,
-  ].join('\n');
 
   // ── Property accesses ──
   const propertiesSection = propertyAccesses.length > 0
@@ -1022,7 +1086,7 @@ Re-validate and return the JSON result. Be explicit about which previous violati
 // JSDoc mandates, "err toward deny", and code-index queries are all wrong for
 // Python and were fighting the (self-contained) Python user prompt. This one
 // defers to the user prompt and disclaims the TS/JSDoc + code-index assumptions.
-export const PY_SYSTEM_PROMPT = `You are a code-quality reviewer for Python edits. The user message is fully self-contained — it states the project's Python conventions, the deterministic tool findings, the code under review, and the exact allow/deny criteria and JSON-only response format. Follow it precisely. Do NOT apply TypeScript or JSDoc expectations, do NOT require @param/@returns-style tags, and do NOT assume a semantic code index is available (there is none for Python). Respond with ONLY the raw JSON object the user message specifies — no markdown, no code fences, no extra text.`;
+export const PY_SYSTEM_PROMPT = `You are a code-quality reviewer for Python edits. The user message is fully self-contained — it states the project's Python conventions, the deterministic tool findings, the code under review, and the exact allow/deny criteria and JSON-only response format. Follow it precisely. Do NOT apply TypeScript or JSDoc expectations, do NOT require @param/@returns-style tags. A Python-aware semantic code index and a bounded set of read-only code-index MCP tools ARE available — the user message contains pre-injected related-code context (siblings, similar functions, callers, docs) pulled from that index, and you may call the provided MCP tools for additional targeted lookups. Prefer that injected context and those MCP tools over guessing; do NOT attempt to read files off disk — you do not have filesystem tools. Respond with ONLY the raw JSON object the user message specifies — no markdown, no code fences, no extra text.`;
 
 /**
  * @what The JSON-only response contract shared by every Python validation prompt, copied verbatim from SYSTEM_PROMPT's "Your response must be ONLY a JSON object" line and its "## Output Format" JSON structure
@@ -1210,9 +1274,56 @@ function formatPyUnits(functions: ExtractedFunction[], classes: ExtractedClass[]
 }
 
 /**
+ * @what Renders a PatternContext into the "RELATED CODE IN THE INDEX" prompt section for the Python first-attempt builder
+ * @how Delegates the per-field formatting to the shared formatPatternContextSections helper, then composes only the subsections the Python prompt cares about (README, siblings, similar-existing-functions DRY signal, callers/blast-radius, relevant docs, similar comments) — each included ONLY when its underlying PatternContext field is non-empty, so a sparse or empty index (e.g. before the first reindex) doesn't pad the prompt with placeholder text. Returns '' when every subsection is empty, so the caller can omit the whole section header
+ * @why P3.5 replaces the Python path's ad-hoc filesystem exploration with the same pre-injected index context the TypeScript path uses — this is the Python-specific composition of that shared data, deliberately narrower than the TS section (no "called functions" or "directory patterns" subsections, since the Python path passes no calledFunctions today — see py-validate.ts's calledFunctions decision)
+ *
+ * @param {PatternContext} patternContext Aggregated code index context for the edit (may be empty when the index has no Python coverage yet)
+ * @returns {string} The complete "== RELATED CODE IN THE INDEX ==" block, or '' when there is nothing to show
+ *
+ * @sideeffects None
+ * @systemlayer Prompt Engineering
+ * @domain prompt-building, python-support, context-assembly
+ * @tags prompt-engineering, python, pattern-context, related-code, dry-enforcement
+ */
+function buildPythonRelatedCodeSection(patternContext: PatternContext): string {
+  const {
+    relevantDocsSection,
+    similarSection,
+    readmeSection,
+    siblingSection,
+    callersSection,
+    similarCommentsSection,
+  } = formatPatternContextSections(patternContext);
+
+  const parts: string[] = [];
+  if (patternContext.directoryReadme) {
+    parts.push(`### Directory README\n${readmeSection}`);
+  }
+  if (patternContext.siblingFunctions.length > 0) {
+    parts.push(`### Sibling Functions (same directory — established patterns)\n${siblingSection}`);
+  }
+  if (patternContext.similarExistingFunctions.size > 0) {
+    parts.push(`### Similar Existing Functions (DRY check — most important)\n${similarSection}`);
+  }
+  if (patternContext.callerDetails.size > 0) {
+    parts.push(`### Callers (blast radius)\n${callersSection}`);
+  }
+  if (patternContext.relevantDocs.length > 0) {
+    parts.push(`### Relevant Documentation\n${relevantDocsSection}`);
+  }
+  if (patternContext.similarComments.length > 0) {
+    parts.push(`### Similar Inline Comments (sub-function DRY check)\n${similarCommentsSection}`);
+  }
+
+  if (parts.length === 0) return '';
+  return `\n== RELATED CODE IN THE INDEX ==\n\n${parts.join('\n\n')}\n`;
+}
+
+/**
  * @what Builds the full first-attempt validation prompt for a proposed Python edit
- * @how Assembles the pragmatic Python convention, the deterministic ruff/pydoclint findings, the local doc-completeness violations, the module metadata, the proposed functions/classes as UNITS, the NO-INDEX and WARN-NOT-DENY notices, an optional syntax-note, and the shared JSON-only response contract into one prompt string. The Python path runs under a neutral system prompt (PY_SYSTEM_PROMPT); everything substantive — convention, findings, criteria, and the response contract — lives in this single user-prompt string.
- * @why The Python validation path has no code index coverage and must bias toward allow-with-suggestion (pyright/ruff run in CI, not here) — this prompt carries both constraints explicitly so headless Claude doesn't apply the stricter TypeScript decision logic to Python edits
+ * @how Assembles the pragmatic Python convention, the deterministic ruff/pydoclint findings, the local doc-completeness violations, the module metadata, the proposed functions/classes as UNITS, the pre-injected RELATED CODE IN THE INDEX section (via buildPythonRelatedCodeSection), an index-availability note, the WARN-NOT-DENY notice, an optional syntax-note, and the shared JSON-only response contract into one prompt string. The Python path runs under a neutral system prompt (PY_SYSTEM_PROMPT); everything substantive — convention, findings, criteria, injected context, and the response contract — lives in this single user-prompt string.
+ * @why P3.5: the Python validation path now has code index coverage (P3.3 definitions + P3.4 call edges) and must bias toward allow-with-suggestion (pyright/ruff run in CI, not here) — this prompt carries both the injected cross-file context and that leniency constraint so headless Claude gets real DRY/pattern signal without re-deriving TypeScript's stricter decision logic
  *
  * @param {object} context Validation context for the proposed Python edit
  * @param {string} context.filePath File being edited
@@ -1222,13 +1333,14 @@ function formatPyUnits(functions: ExtractedFunction[], classes: ExtractedClass[]
  * @param {Map<string, string[]>} context.docViolations Local doc-completeness violations from checkPythonDocCompleteness
  * @param {{ ruff: PyFinding[]; pydoclint: PyFinding[] }} context.toolFindings Deterministic findings from runPyTools
  * @param {boolean} context.isNewFile Whether this edit creates a new file
+ * @param {PatternContext} context.patternContext Pre-injected code index context (siblings/similar/callers/docs/comments) built defensively by py-validate.ts — may be an empty context if the index is unavailable or has no Python coverage yet, in which case buildPythonRelatedCodeSection renders ''
  * @param {boolean} [context.syntaxNote] Whether the extractor reported an intermediate/partial parse state
  * @returns {string} Complete first-attempt validation prompt for the Python path
  *
  * @sideeffects None
  * @systemlayer Prompt Engineering
  * @domain prompt-building, python-support, code-quality
- * @tags prompt-engineering, python, first-attempt, no-index, warn-not-deny, validation-prompt
+ * @tags prompt-engineering, python, first-attempt, pattern-context, warn-not-deny, validation-prompt
  */
 export function buildPythonFirstAttemptPrompt(context: {
   filePath: string;
@@ -1238,9 +1350,10 @@ export function buildPythonFirstAttemptPrompt(context: {
   docViolations: Map<string, string[]>;
   toolFindings: { ruff: PyFinding[]; pydoclint: PyFinding[] };
   isNewFile: boolean;
+  patternContext: PatternContext;
   syntaxNote?: boolean;
 }): string {
-  const { filePath, functions, classes, module, docViolations, toolFindings, isNewFile, syntaxNote } = context;
+  const { filePath, functions, classes, module, docViolations, toolFindings, isNewFile, patternContext, syntaxNote } = context;
 
   const conventionSection = `Every module and class/dataclass must carry a docstring with a one-line "what" and a \`Domain:\` line (classes may also add an optional \`Tags:\` line). Every PUBLIC function/method must carry a one-line docstring. Only demand \`Args:\`/\`Returns:\`/\`Raises:\` sections when the signature is non-trivial (multiple params, a non-obvious return, or raised exceptions) — do NOT require them on simple functions. Types live in annotations (PEP 604 syntax, e.g. \`int | None\`), NOT in docstring prose — never ask for types to be repeated in prose. DRY: prefer reusing existing helpers; watch for hand-rolled logic that a decorator, a \`functools\` utility, a context manager, or the data model (dataclass/Pydantic) already provides.`;
 
@@ -1252,6 +1365,8 @@ Layer: ${module.layer ?? '(none)'}`;
   const syntaxSection = syntaxNote
     ? '\n== INTERMEDIATE SYNTAX STATE ==\n\nThis edit is a partial/intermediate state (parse incomplete) — treat structural gaps as in-progress and do not deny for them.\n'
     : '';
+
+  const relatedCodeSection = buildPythonRelatedCodeSection(patternContext);
 
   return `You are validating a proposed edit to a PYTHON file (\`${filePath}\`)${isNewFile ? ' (NEW FILE)' : ''}. Decide allow or deny.
 
@@ -1276,10 +1391,10 @@ ${moduleSection}
 == UNITS (functions, methods, classes, dataclasses being edited) ==
 
 ${formatPyUnits(functions, classes)}
+${relatedCodeSection}
+== INDEX & MCP TOOLS AVAILABLE (important) ==
 
-== NO-INDEX NOTICE (critical) ==
-
-The semantic code index does NOT yet cover Python, so you have NO cross-file sibling/caller context. Judge DRY and pattern-consistency ONLY from the code shown — do NOT claim a duplicate exists elsewhere. Cross-file checks arrive in a later phase.
+A Python-aware semantic code index now covers this project, and the RELATED CODE IN THE INDEX section above (when present) was pre-injected for you — directory README, sibling functions, similar-existing-function DRY signal, callers/blast-radius, relevant docs, and similar inline comments. You also have bounded read-only code-index MCP tools (search, callers, callees, impact, search_comments, search_doc_sections, list_domains/tags/systemlayers, index_status) for targeted follow-up lookups beyond what was injected. Prefer the injected context and these MCP tools over guessing — you have NO filesystem tools, so you cannot read sibling files directly. If the RELATED CODE section above is empty, the index may not have Python coverage for this project yet (e.g. before the first reindex) — judge DRY and pattern-consistency from the code shown in that case, same as before.
 
 == WARN-NOT-DENY (critical) ==
 
@@ -1290,8 +1405,8 @@ ${PY_RESPONSE_CONTRACT}`;
 
 /**
  * @what Builds the compact retry prompt for a resumed Python headless Claude session
- * @how Restates the still-open local doc-completeness violations, the deterministic tool findings, and the updated units — the resumed session already has the convention, NO-INDEX notice, and WARN-NOT-DENY guidance from the first-attempt prompt
- * @why On resume, Claude already has the full Python convention and prior reasoning; resending it would waste tokens and latency, mirroring how buildRetryPrompt is a compact version of buildFirstAttemptPrompt for the TypeScript path
+ * @how Restates the still-open local doc-completeness violations, the deterministic tool findings, and the updated units — the resumed session already has the convention, the injected RELATED CODE IN THE INDEX context, and the WARN-NOT-DENY guidance from the first-attempt prompt. Mirrors the TypeScript path's buildRetryPrompt, which likewise does NOT rebuild pattern context on retry — the resumed headless session retains it from the first attempt
+ * @why On resume, Claude already has the full Python convention, injected index context, and prior reasoning; resending it would waste tokens and latency, mirroring how buildRetryPrompt is a compact version of buildFirstAttemptPrompt for the TypeScript path
  *
  * @param {object} context Updated edit context for the retry
  * @param {string} context.filePath File being edited

@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractInlineComments } from '../src/hooks/helpers/code-index-client.js';
+import { mkdtempSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { extractInlineComments, buildPatternContext, setProjectContext } from '../src/hooks/helpers/code-index-client.js';
 
 describe('extractInlineComments', () => {
   it('extracts single-line comments', () => {
@@ -62,5 +65,46 @@ describe('extractInlineComments', () => {
     const result = extractInlineComments(code);
     // extractInlineComments only captures full-line // comments, not end-of-line
     assert.equal(result.length, 0);
+  });
+});
+
+// ─── buildPatternContext (fail-open, no index) ───────────────────────────────
+//
+// The Python validation path (py-validate.ts, P3.5) calls buildPatternContext
+// defensively — `.catch(() => EMPTY_PATTERN_CONTEXT)` — specifically because a
+// Python project may not have been reindexed yet (no DB, or a DB with zero
+// Python rows). This test verifies the property that defensive wrapping relies
+// on: buildPatternContext itself already resolves to an all-empty context
+// rather than throwing when no code index database exists for the project.
+
+describe('buildPatternContext (fail-open when no index exists)', () => {
+  it('resolves without throwing and returns an empty-shaped context when the project has no code index database', async () => {
+    const originalGuardianHome = process.env.GUARDIAN_HOME;
+    const tmpProjectRoot = mkdtempSync(path.join(tmpdir(), 'guardian-pattern-context-test-'));
+    mkdirSync(path.join(tmpProjectRoot, '.git'));
+    const tmpGuardianHome = mkdtempSync(path.join(tmpdir(), 'guardian-home-empty-'));
+
+    try {
+      process.env.GUARDIAN_HOME = tmpGuardianHome;
+      const fakeFilePath = path.join(tmpProjectRoot, 'module.py');
+      setProjectContext(fakeFilePath);
+
+      const context = await buildPatternContext(fakeFilePath, ['modified_fn'], ['new_fn'], [], ['a comment']);
+
+      assert.equal(context.directoryReadme, null);
+      assert.equal(context.siblingFunctions.length, 0);
+      assert.equal(context.calledFunctionDetails.size, 0);
+      assert.equal(context.unknownCalledFunctions.length, 0);
+      assert.equal(context.callerDetails.size, 0);
+      assert.equal(context.similarExistingFunctions.size, 0);
+      assert.equal(context.relevantDocs.length, 0);
+      assert.equal(context.similarComments.length, 0);
+    } finally {
+      if (originalGuardianHome === undefined) {
+        delete process.env.GUARDIAN_HOME;
+      } else {
+        process.env.GUARDIAN_HOME = originalGuardianHome;
+      }
+    }
   });
 });
