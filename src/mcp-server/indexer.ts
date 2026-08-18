@@ -16,6 +16,7 @@ import {
 } from './db.js';
 import { generateEmbeddings, invalidateCache } from './embeddings.js';
 import { resolveConfig } from '../config.js';
+import { extractPythonFile, type PyExtracted } from './py-index.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -623,6 +624,36 @@ function parseDocFile(content: string, filePath: string): ParsedDoc | null {
 
 // ─── File Walking ───────────────────────────────────────────────────────────
 
+// Directories skipped by both walkDirectory and findReadmeFiles. Includes common
+// non-source directories plus Python-specific ones (virtualenvs, bytecode caches,
+// tool caches) now that .py files are walked too.
+const WALK_EXCLUDE_DIRS = [
+  'node_modules', 'dist', '.claude', 'cdk.out', 'build', '__snapshots__', '.next', '.turbo', 'coverage',
+  '.venv', '__pycache__', '.pytest_cache', 'site-packages', '.mypy_cache', '.ruff_cache',
+];
+
+/**
+ * @what Determines whether a Python file should be skipped as a test file during indexing
+ * @how Matches the filename against `test_*.py` / `*_test.py`, OR checks whether the path relative
+ *   to the directory being walked contains a `tests` path segment
+ * @why Python test functions are low-value to index (docstring-exempt, not part of the public API
+ *   surface) — mirrors the `.test.ts`/`.test.tsx` skip already applied to TypeScript
+ *
+ * @param {string} fileName The file's base name (e.g. `test_foo.py`)
+ * @param {string} relFromScanRoot The file's path relative to the directory walkDirectory started from
+ * @returns {boolean} True if the file should be skipped
+ *
+ * @sideeffects None
+ * @systemlayer Business Logic
+ * @domain code-index, python-support
+ * @tags python, test-skip, indexer, walk
+ */
+function isPythonTestFile(fileName: string, relFromScanRoot: string): boolean {
+  if (/^test_.*\.py$/.test(fileName) || /_test\.py$/.test(fileName)) return true;
+  const segments = relFromScanRoot.split(path.sep);
+  return segments.includes('tests');
+}
+
 function walkDirectory(dir: string, extensions: string[]): string[] {
   const files: string[] = [];
 
@@ -639,15 +670,16 @@ function walkDirectory(dir: string, extensions: string[]): string[] {
 
       if (entry.isDirectory()) {
         // Skip common non-source directories
-        if (['node_modules', 'dist', '.claude', 'cdk.out', 'build', '__snapshots__', '.next', '.turbo', 'coverage'].includes(entry.name)) {
+        if (WALK_EXCLUDE_DIRS.includes(entry.name)) {
           continue;
         }
         walk(fullPath);
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name);
-        if (extensions.includes(ext) && !entry.name.endsWith('.test.ts') && !entry.name.endsWith('.test.tsx')) {
-          files.push(fullPath);
-        }
+        if (!extensions.includes(ext)) continue;
+        if (entry.name.endsWith('.test.ts') || entry.name.endsWith('.test.tsx')) continue;
+        if (ext === '.py' && isPythonTestFile(entry.name, path.relative(dir, fullPath))) continue;
+        files.push(fullPath);
       }
     }
   }
@@ -671,7 +703,7 @@ function findReadmeFiles(dir: string): string[] {
       const fullPath = path.join(currentDir, entry.name);
 
       if (entry.isDirectory()) {
-        if (['node_modules', 'dist', '.claude', 'cdk.out', 'build', '__snapshots__', '.next', '.turbo', 'coverage'].includes(entry.name)) continue;
+        if (WALK_EXCLUDE_DIRS.includes(entry.name)) continue;
         walk(fullPath);
       } else if (entry.isFile() && entry.name.toLowerCase() === 'readme.md') {
         files.push(fullPath);
@@ -681,6 +713,146 @@ function findReadmeFiles(dir: string): string[] {
 
   walk(dir);
   return files;
+}
+
+// ─── Python File Indexing ───────────────────────────────────────────────────
+
+/**
+ * @what Indexes a single Python file's module + unit definitions into the functions table
+ * @how Invokes extractPythonFile() for the raw {module, units} payload (fail-open: null skips the
+ *   file but still records its content hash). Wraps all inserts in a single transaction mirroring
+ *   the TS code path: one row per module (declaration_type='module') plus one row per unit
+ *   (function/method/class/dataclass), each tagged language='py'. A unit without its own Domain
+ *   inherits the module's domains for both function_domains and its embedding input (denormalization).
+ *   Tier rule: the module row is tier 1 if it has a Domain else tier 3; every unit row is tier 1 if it
+ *   has a Domain else tier 2 (units are never tier 3). Embeddings are generated after the transaction
+ *   commits, same as the TS path.
+ * @why Makes buildPatternContext (siblings/similar/DRY/docs) work for Python by writing into the same
+ *   functions/function_domains/function_tags/function_systemlayers/function_embeddings tables
+ *   TypeScript uses, without duplicating the transaction/hash/embedding plumbing
+ *
+ * @param {Database.Database} db The database instance
+ * @param {string} absPath Absolute path to the on-disk .py file
+ * @param {string} relativePath Path relative to repoRoot, used as the file_path column (same normalization as the TS path)
+ * @param {string} contentHash Precomputed hash of the file's on-disk content, stored via setFileHash regardless of extraction outcome
+ * @param {IndexStats} stats Mutable stats accumulator, updated in place
+ * @returns {Promise<void>}
+ *
+ * @sideeffects Spawns a Python subprocess (via extractPythonFile), writes rows to the functions/function_domains/function_tags/function_systemlayers/function_embeddings/file_hashes tables
+ * @systemlayer Business Logic
+ * @domain code-index, python-support
+ * @tags python, indexer, extraction, tier-rule, denormalization
+ */
+async function indexPythonFile(
+  db: Database.Database,
+  absPath: string,
+  relativePath: string,
+  contentHash: string,
+  stats: IndexStats
+): Promise<void> {
+  const extracted: PyExtracted | null = extractPythonFile(absPath);
+  if (!extracted) {
+    // Fail-open: guardian_py unavailable, subprocess error, syntax error, or parse failure.
+    // Still record the file hash so incremental rebuilds don't retry it every run.
+    setFileHash(db, relativePath, contentHash);
+    return;
+  }
+
+  const { module, units } = extracted;
+
+  type PendingEmbedding = {
+    functionId: number;
+    name: string;
+    description: string;
+    domains: string[];
+    systemlayers: string[];
+    tags: string[];
+    body: string;
+  };
+  const pendingEmbeddings: PendingEmbedding[] = [];
+
+  const insertFileData = db.transaction(() => {
+    // Module row
+    const moduleName = path.basename(relativePath, '.py');
+    const moduleDescription = module.summary ?? '';
+    const moduleSystemlayers = module.layer ? [module.layer] : [];
+    const moduleId = insertFunction(db, {
+      name: moduleName,
+      description: moduleDescription,
+      file_path: relativePath,
+      line_number: 1,
+      is_exported: true,
+      declaration_type: 'module',
+      side_effects: null,
+      system_layer: module.layer,
+      tier: module.domains.length ? 1 : 3,
+      language: 'py',
+    });
+    insertDomains(db, moduleId, module.domains);
+    insertTags(db, moduleId, module.tags);
+    insertSystemLayers(db, moduleId, moduleSystemlayers);
+    if (module.domains.length) stats.tier1Added++; else stats.tier3Added++;
+
+    pendingEmbeddings.push({
+      functionId: moduleId,
+      name: moduleName,
+      description: moduleDescription,
+      domains: module.domains,
+      systemlayers: moduleSystemlayers,
+      tags: module.tags,
+      body: module.docstring ?? '',
+    });
+
+    // Each function/method/class/dataclass unit
+    for (const unit of units) {
+      const description = unit.summary ?? unit.docstring ?? '';
+      // Denormalization: a unit without its own Domain inherits the module's Domain so
+      // search/embeddings still surface it under the module's classification.
+      const domains = unit.domains.length ? unit.domains : module.domains;
+      const systemlayers = unit.layer ? [unit.layer] : [];
+      const tier = unit.domains.length ? 1 : 2; // never tier 3 for units
+
+      const unitId = insertFunction(db, {
+        name: unit.name,
+        description,
+        file_path: relativePath,
+        line_number: unit.line,
+        is_exported: unit.is_exported,
+        declaration_type: unit.kind,
+        side_effects: null,
+        system_layer: unit.layer,
+        tier,
+        language: 'py',
+      });
+
+      insertDomains(db, unitId, domains);
+      insertTags(db, unitId, unit.tags);
+      insertSystemLayers(db, unitId, systemlayers);
+      if (tier === 1) stats.tier1Added++; else stats.tier2Added++;
+
+      pendingEmbeddings.push({
+        functionId: unitId,
+        name: unit.name,
+        description,
+        domains,
+        systemlayers,
+        tags: unit.tags,
+        body: unit.docstring ?? '',
+      });
+    }
+
+    setFileHash(db, relativePath, contentHash);
+  });
+
+  insertFileData();
+
+  // Generate embeddings outside the transaction (async operation), same as the TS path
+  for (const emb of pendingEmbeddings) {
+    const result = await generateEmbeddings(db, emb);
+    if (result.signatureGenerated || result.bodyGenerated) {
+      stats.embeddingsGenerated++;
+    }
+  }
 }
 
 // ─── Index Building ─────────────────────────────────────────────────────────
@@ -714,7 +886,7 @@ export async function buildIndex(
 
   if (options.incremental && options.dirtyFiles && options.dirtyFiles.length > 0) {
     // Incremental: only process dirty files
-    codeFiles = options.dirtyFiles.filter(f => f.endsWith('.ts') || f.endsWith('.tsx'));
+    codeFiles = options.dirtyFiles.filter(f => f.endsWith('.ts') || f.endsWith('.tsx') || f.endsWith('.py'));
     docFiles = options.dirtyFiles.filter(f => f.endsWith('.md'));
   } else {
     // Full rebuild: scan everything
@@ -749,6 +921,11 @@ export async function buildIndex(
 
     // Remove old entries for this file
     deleteFunctionsByFilePath(db, relativePath);
+
+    if (filePath.endsWith('.py')) {
+      await indexPythonFile(db, filePath, relativePath, contentHash, stats);
+      continue;
+    }
 
     // Parse JSDoc blocks using regex.exec() loop for precise position tracking
     const jsdocRegex = /\/\*\*[\s\S]*?@domain[\s\S]*?\*\//g;
