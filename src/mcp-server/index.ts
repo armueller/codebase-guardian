@@ -28,6 +28,7 @@ import { semanticSearch, invalidateCache } from './embeddings.js';
 import { clearValidationArtifacts } from './validation-artifacts.js';
 import { buildIndex, readDirtyFiles, clearDirtyFiles } from './indexer.js';
 import { buildCallGraph } from './call-graph.js';
+import { buildPythonCallGraph } from './py-call-graph.js';
 import { createIndexAPI } from '../shared/index-api.js';
 import { executeInSandbox } from './execute-sandbox.js';
 
@@ -444,6 +445,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const indexStats = await buildIndex(db, REPO_ROOT);
         console.error('Building call graph...');
         const graphStats = await buildCallGraph(db, REPO_ROOT);
+        console.error('Building Python call graph...');
+        const pyGraphStats = await buildPythonCallGraph(db, REPO_ROOT);
         invalidateCache();
 
         // Bust the hook's validation cache + session store so stale verdicts
@@ -464,6 +467,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               `**Tier 3 (docs):** ${indexStats.tier3Added}`,
               `**Embeddings generated:** ${indexStats.embeddingsGenerated}`,
               `**Call edges:** ${graphStats.edgesCreated}`,
+              `**Python call edges:** ${pyGraphStats.edgesCreated}`,
               `**Inline comments:** ${indexStats.commentsExtracted}`,
               `**Doc sections:** ${indexStats.docSectionsCreated}`,
               `**Validation cache:** ${clearedArtifacts.length > 0 ? `cleared (${clearedArtifacts.join(', ')})` : 'already clear'}`,

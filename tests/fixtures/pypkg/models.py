@@ -17,6 +17,13 @@ class Widget:
     name: str
     count: int = 0
 
+    def to_dict(self) -> dict:
+        """Serializes the widget to a plain dict.
+
+        Domain: widgets. Tags: serialization, fixture.
+        """
+        return {"name": self.name, "count": self.count}
+
 
 class PlainRecord:
     """A plain class with no domain of its own.
@@ -25,3 +32,13 @@ class PlainRecord:
     """
 
     label: str
+
+    def to_dict(self) -> dict:
+        """Serializes the plain record to a dict.
+
+        Same method name as Widget.to_dict in this same file — used by
+        tests/py-call-graph.test.ts to prove call-edge resolution picks the
+        correct same-named method row via (file, definition-line), not just
+        (name, file).
+        """
+        return {"label": self.label}

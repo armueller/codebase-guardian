@@ -6,11 +6,15 @@ This is the Python analog of the TypeScript `call-graph.ts` (ts-morph): walk
 every `.py` file under a package root, find call sites via the stdlib `ast`,
 and resolve each callee's defining file across module boundaries using Jedi
 static analysis. Node (P3.4) later joins these edges against indexed function
-rows by name+file, so the contract here is deliberately conservative: keep
-every call site as an edge, but only fill in `callee_file` when Jedi resolves
-it to a location *inside* the given package root. Unresolved or external
-(stdlib/third-party) callees are kept with `callee_file: null` rather than
-dropped, so the caller can decide what to do with them.
+rows primarily by (file, definition-line) — `callee_def_line` (Jedi's
+resolved `defs[0].line`) and `caller_line` (the enclosing def's own
+`lineno`) — falling back to name+file only when a def-line is unavailable,
+since Python method names collide across classes in one file. So the
+contract here is deliberately conservative: keep every call site as an edge,
+but only fill in `callee_file`/`callee_def_line` when Jedi resolves it to a
+location *inside* the given package root. Unresolved or external
+(stdlib/third-party) callees are kept with `callee_file`/`callee_def_line:
+null` rather than dropped, so the caller can decide what to do with them.
 
 Fail-open, like `extract.py`: any file that fails to parse, or any single
 call that Jedi can't resolve, is skipped/nulled rather than raising. The one
@@ -95,9 +99,9 @@ def build_callgraph(package_root: str) -> dict:
         except Exception:
             continue
 
-        for caller_name, call_lineno, callee_name, line, col in calls:
-            callee_file = _resolve_callee(script, line, col, root_abs)
-            key = (file_path, caller_name, callee_name, callee_file)
+        for caller_name, caller_lineno, call_lineno, callee_name, line, col in calls:
+            callee_file, callee_def_line = _resolve_callee(script, line, col, root_abs)
+            key = (file_path, caller_name, callee_name, callee_file, callee_def_line)
             if key in seen:
                 continue
             seen.add(key)
@@ -105,8 +109,10 @@ def build_callgraph(package_root: str) -> dict:
                 {
                     "caller_name": caller_name,
                     "caller_file": file_path,
+                    "caller_line": caller_lineno,
                     "callee_name": callee_name,
                     "callee_file": callee_file,
+                    "callee_def_line": callee_def_line,
                     "line": call_lineno,
                     "edge_type": "calls",
                 }
@@ -131,36 +137,39 @@ def _find_py_files(root: str) -> list[str]:
     return sorted(found)
 
 
-def _resolve_callee(script, line: int, col: int, root_abs: str) -> str | None:
-    """Jedi-resolve one call site to its definition's absolute file path.
+def _resolve_callee(script, line: int, col: int, root_abs: str) -> tuple[str | None, int | None]:
+    """Jedi-resolve one call site to its definition's absolute file path + def line.
 
-    Returns None when Jedi can't resolve the call, when the definition has
-    no backing file (e.g. a C-extension builtin), or when it resolves
-    outside `root_abs` (stdlib/third-party — treated as external per the
-    task contract, not an error). Any Jedi exception is swallowed here so
+    Returns `(None, None)` when Jedi can't resolve the call, when the
+    definition has no backing file (e.g. a C-extension builtin), or when it
+    resolves outside `root_abs` (stdlib/third-party — treated as external per
+    the task contract, not an error). Any Jedi exception is swallowed here so
     one bad call site never aborts the file.
     """
     try:
-        # Everything here — including `.module_path`, which does further lazy
-        # inference internally and can itself raise — must stay inside this
-        # one try/except. A prior version only wrapped `goto()`; a raise from
-        # `.module_path` on a single flaky call would otherwise escape this
-        # function, abort the whole `for file_path in files:` loop in
-        # `build_callgraph`, and get caught only by __main__.py's last-resort
-        # handler — which discards every edge collected so far, not just the
-        # one bad call. See task-p3.1 fix report.
+        # Everything here — including `.module_path`/`.line`, which do further
+        # lazy inference internally and can themselves raise — must stay
+        # inside this one try/except. A prior version only wrapped `goto()`;
+        # a raise from `.module_path` on a single flaky call would otherwise
+        # escape this function, abort the whole `for file_path in files:` loop
+        # in `build_callgraph`, and get caught only by __main__.py's
+        # last-resort handler — which discards every edge collected so far,
+        # not just the one bad call. See task-p3.1 fix report. `.line` is
+        # subject to the same lazy-inference risk as `.module_path`, so
+        # capturing it here (rather than in a second, separate try/except)
+        # preserves that guarantee for task-p3.4.
         defs = script.goto(line, col, follow_imports=True)
         if not defs:
-            return None
+            return None, None
         module_path = defs[0].module_path
         if module_path is None:
-            return None
+            return None, None
         module_path = str(module_path)
         if not _is_within(module_path, root_abs):
-            return None
-        return module_path
+            return None, None
+        return module_path, defs[0].line
     except Exception:
-        return None
+        return None, None
 
 
 def _is_within(path: str, root: str) -> bool:
@@ -180,18 +189,21 @@ class _CallCollector(ast.NodeVisitor):
 
     `caller_name` is the nearest enclosing `FunctionDef`/`AsyncFunctionDef`
     name, or `"<module>"` for a call made at module scope (matching the
-    contract's `caller_name` rule). Only `ast.Name` (`func()`) and
-    `ast.Attribute` (`obj.method()`) callees are recorded — other call
-    shapes (e.g. calling a subscript or a call result) have no stable name
-    to resolve against and are intentionally skipped, per the brief.
+    contract's `caller_name` rule). `caller_lineno` is that enclosing def's
+    own `lineno` (i.e. the `def` line, matching the indexer's
+    `functions.line_number` for the same unit), or `None` for a module-level
+    call. Only `ast.Name` (`func()`) and `ast.Attribute` (`obj.method()`)
+    callees are recorded — other call shapes (e.g. calling a subscript or a
+    call result) have no stable name to resolve against and are
+    intentionally skipped, per the brief.
     """
 
     def __init__(self) -> None:
-        self._stack: list[str] = []
-        self.calls: list[tuple[str, int, str, int, int]] = []
+        self._stack: list[tuple[str, int]] = []
+        self.calls: list[tuple[str, int | None, int, str, int, int]] = []
 
-    def _enclosing(self) -> str:
-        return self._stack[-1] if self._stack else "<module>"
+    def _enclosing(self) -> tuple[str, int | None]:
+        return self._stack[-1] if self._stack else ("<module>", None)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_def(node)
@@ -200,7 +212,7 @@ class _CallCollector(ast.NodeVisitor):
         self._visit_def(node)
 
     def _visit_def(self, node) -> None:
-        self._stack.append(node.name)
+        self._stack.append((node.name, node.lineno))
         self.generic_visit(node)
         self._stack.pop()
 
@@ -220,12 +232,13 @@ class _CallCollector(ast.NodeVisitor):
             name = line = col = None
 
         if name is not None:
-            self.calls.append((self._enclosing(), node.lineno, name, line, col))
+            caller_name, caller_lineno = self._enclosing()
+            self.calls.append((caller_name, caller_lineno, node.lineno, name, line, col))
 
         self.generic_visit(node)
 
 
-def _collect_calls(tree: ast.Module) -> list[tuple[str, int, str, int, int]]:
+def _collect_calls(tree: ast.Module) -> list[tuple[str, int | None, int, str, int, int]]:
     collector = _CallCollector()
     collector.visit(tree)
     return collector.calls

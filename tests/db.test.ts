@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { sanitizeFTSQuery, openDatabase, insertFunction } from '../src/mcp-server/db.js';
+import { sanitizeFTSQuery, openDatabase, insertFunction, insertDomains, getFunctionByFileAndLine } from '../src/mcp-server/db.js';
 
 describe('sanitizeFTSQuery', () => {
   it('converts multi-word query to OR-joined quoted tokens', () => {
@@ -118,6 +118,67 @@ describe('functions.language column', () => {
     assert.equal(pyRow.language, 'py');
     assert.equal(tsRow.language, 'ts');
 
+    db.close();
+  });
+});
+
+describe('getFunctionByFileAndLine', () => {
+  it('disambiguates two same-named functions in the same file by line_number, hydrated with domains/tags/systemlayers', () => {
+    const db = openDatabase(':memory:');
+
+    // Two same-named methods in one file (e.g. Widget.to_dict vs
+    // PlainRecord.to_dict) — the exact collision (name, file) alone cannot
+    // resolve, per the P3.3 carry-forward design constraint. Only
+    // file_path + line_number is unique per unit.
+    const widgetId = insertFunction(db, {
+      name: 'to_dict',
+      description: 'Widget.to_dict',
+      file_path: 'models.py',
+      line_number: 12,
+      is_exported: true,
+      declaration_type: 'method',
+      side_effects: null,
+      system_layer: null,
+      tier: 1,
+      language: 'py',
+    });
+    insertDomains(db, widgetId, ['widgets']);
+
+    const plainRecordId = insertFunction(db, {
+      name: 'to_dict',
+      description: 'PlainRecord.to_dict',
+      file_path: 'models.py',
+      line_number: 27,
+      is_exported: true,
+      declaration_type: 'method',
+      side_effects: null,
+      system_layer: null,
+      tier: 2,
+      language: 'py',
+    });
+    insertDomains(db, plainRecordId, ['records']);
+
+    const widgetResult = getFunctionByFileAndLine(db, 'models.py', 12);
+    assert.ok(widgetResult, 'should find the row at line 12');
+    assert.equal(widgetResult!.id, widgetId);
+    assert.equal(widgetResult!.description, 'Widget.to_dict');
+    assert.deepEqual(widgetResult!.domains, ['widgets'], 'should be hydrated with domains like getFunctionByName');
+
+    const plainRecordResult = getFunctionByFileAndLine(db, 'models.py', 27);
+    assert.ok(plainRecordResult, 'should find the row at line 27');
+    assert.equal(plainRecordResult!.id, plainRecordId);
+    assert.equal(plainRecordResult!.description, 'PlainRecord.to_dict');
+    assert.deepEqual(plainRecordResult!.domains, ['records']);
+
+    assert.notEqual(widgetResult!.id, plainRecordResult!.id, 'the two same-named methods must resolve to distinct rows');
+
+    db.close();
+  });
+
+  it('returns null when no row matches the given file_path + line_number', () => {
+    const db = openDatabase(':memory:');
+    const result = getFunctionByFileAndLine(db, 'nonexistent.py', 1);
+    assert.equal(result, null);
     db.close();
   });
 });

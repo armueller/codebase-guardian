@@ -639,6 +639,12 @@ export function getFunctionByName(db: Database.Database, name: string, filePath?
   return hydrateFunction(db, row);
 }
 
+export function getFunctionByFileAndLine(db: Database.Database, filePath: string, line: number): FunctionResult | null {
+  const row = db.prepare('SELECT * FROM functions WHERE file_path = ? AND line_number = ? LIMIT 1').get(filePath, line) as FunctionRecord | undefined;
+  if (!row) return null;
+  return hydrateFunction(db, row);
+}
+
 export function getAllFunctionIds(db: Database.Database): number[] {
   const rows = db.prepare('SELECT id FROM functions').all() as { id: number }[];
   return rows.map(r => r.id);
