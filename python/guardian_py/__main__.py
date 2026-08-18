@@ -8,6 +8,7 @@ import argparse
 import json
 import sys
 
+from guardian_py.callgraph import build_callgraph
 from guardian_py.extract import extract_file
 
 
@@ -22,6 +23,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     p_extract = sub.add_parser("extract", help="Extract units from one file")
     p_extract.add_argument("file")
+    p_callgraph = sub.add_parser("callgraph", help="Build cross-file call edges for a package")
+    p_callgraph.add_argument("package_root")
     args = parser.parse_args(argv)
 
     if args.command == "extract":
@@ -31,6 +34,13 @@ def main(argv: list[str] | None = None) -> int:
             payload = {"language": "py", "file": args.file, "error": "not_found"}
         except Exception as exc:  # never crash the caller; report and exit 0
             payload = {"language": "py", "file": args.file, "error": "internal", "detail": str(exc)}
+        sys.stdout.write(json.dumps(payload))
+    elif args.command == "callgraph":
+        try:
+            payload = build_callgraph(args.package_root)
+        except Exception as exc:  # build_callgraph is already fail-open internally;
+            # this is a last-resort net for anything that still escapes it.
+            payload = {"language": "py", "root": args.package_root, "error": "internal", "detail": str(exc), "edges": []}
         sys.stdout.write(json.dumps(payload))
     return 0
 
