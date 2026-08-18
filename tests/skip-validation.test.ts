@@ -2,7 +2,9 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   shouldSkipValidation,
-  VALIDATABLE_EXTENSIONS
+  VALIDATABLE_EXTENSIONS,
+  isPythonFile,
+  requiresCodeIndex
 } from '../src/hooks/helpers/skip-validation.js';
 
 describe('shouldSkipValidation (allow-list)', () => {
@@ -58,5 +60,32 @@ describe('shouldSkipValidation (allow-list)', () => {
     // .py is only safe in this allow-list because py-validate.ts dispatches it
     // to the guardian_py extractor instead of the TS-only pipeline.
     assert.equal(VALIDATABLE_EXTENSIONS.has('.py'), true);
+  });
+});
+
+describe('isPythonFile', () => {
+  it('recognizes .py files', () => {
+    assert.equal(isPythonFile('/repo/ml/labelgen/marking.py'), true);
+  });
+
+  it('is case-insensitive on the extension', () => {
+    assert.equal(isPythonFile('/repo/ml/Foo.PY'), true);
+  });
+
+  it('rejects non-Python files', () => {
+    assert.equal(isPythonFile('/repo/app/foo.ts'), false);
+    assert.equal(isPythonFile('/repo/app/Button.tsx'), false);
+    assert.equal(isPythonFile('/repo/ml/models.pyi'), false);
+  });
+});
+
+describe('requiresCodeIndex', () => {
+  it('Python files do not require the TS code index (they have their own validation path)', () => {
+    assert.equal(requiresCodeIndex('/repo/ml/labelgen/marking.py'), false);
+  });
+
+  it('TypeScript files require the TS code index', () => {
+    assert.equal(requiresCodeIndex('/repo/app/foo.ts'), true);
+    assert.equal(requiresCodeIndex('/repo/app/Button.tsx'), true);
   });
 });

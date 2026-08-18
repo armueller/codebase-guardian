@@ -63,3 +63,43 @@ export function shouldSkipValidation(filePath: string): boolean {
   const ext = path.extname(filePath).toLowerCase();
   return !VALIDATABLE_EXTENSIONS.has(ext);
 }
+
+/**
+ * @what Determines whether a file path is a Python source file
+ * @how Lower-cases the path and checks for a trailing `.py` extension
+ * @why Shared by pre-edit-validation.ts (to dispatch to validatePythonEdit instead of the ts-morph
+ *   pipeline) and requiresCodeIndex below (Python has no code index coverage). Lives here rather than
+ *   in pre-edit-validation.ts because that module auto-runs main() on import and cannot be imported
+ *   from a test — this is the importable language-detection home.
+ *
+ * @param {string} filePath Absolute path to the file being edited
+ * @returns {boolean} True if the file is a `.py` source
+ *
+ * @sideeffects None
+ * @systemlayer Filtering
+ * @domain file-filtering, language-detection, python-support
+ * @tags language-detection, python, filtering, extension-check
+ */
+export function isPythonFile(filePath: string): boolean {
+  return filePath.toLowerCase().endsWith('.py');
+}
+
+/**
+ * @what Determines whether a file needs the TypeScript code index to be validated
+ * @how Returns false for Python files, true otherwise
+ * @why The PreToolUse hook's fail-open gate allows edits when the TS code index is unavailable, since
+ *   most validation depends on it. Python edits are validated by a self-contained path
+ *   (validatePythonEdit) that has zero code index coverage by design and degrades gracefully on its
+ *   own — so an absent TS index must not block Python files from reaching that path.
+ *
+ * @param {string} filePath Absolute path to the file being edited
+ * @returns {boolean} True if the file's validation path depends on the TS code index
+ *
+ * @sideeffects None
+ * @systemlayer Filtering
+ * @domain file-filtering, language-detection, python-support, index-availability
+ * @tags language-detection, python, code-index, fail-open, gating
+ */
+export function requiresCodeIndex(filePath: string): boolean {
+  return !isPythonFile(filePath);
+}

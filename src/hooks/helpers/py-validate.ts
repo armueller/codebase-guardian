@@ -38,7 +38,6 @@ import {
 } from './validation-cache.js';
 import { getSession, setDenialInfo, clearSession } from './validation-sessions.js';
 import { shouldStandDown } from './circuit-breaker.js';
-import { enhanceViolationWithQueryHint } from './denial-hints.js';
 import { resolveConfig } from '../../config.js';
 
 const hookConfig = resolveConfig();
@@ -283,14 +282,15 @@ export async function validatePythonEdit(
         setDenialInfo(sessionKey, onDiskHash, validationResult.reasoning, proposedHash);
       }
 
-      const enhancedViolations = validationResult.violations.map(enhanceViolationWithQueryHint);
-
+      // Python violations are NOT run through enhanceViolationWithQueryHint: those
+      // hints point at code-index MCP tools (api.semanticSearch/callers) that have
+      // zero Python coverage today, so appending them would only mislead. Return raw.
       return {
         action: validationResult.decision === 'allow' ? 'allow' : 'deny',
         message: validationResult.decision === 'allow'
           ? `Code Quality Passed: ${validationResult.reasoning}`
           : `BLOCKED: ${validationResult.reasoning}`,
-        violations: enhancedViolations,
+        violations: validationResult.violations,
         suggestions: validationResult.suggestions.length > 0 ? validationResult.suggestions : undefined
       };
     } catch (error) {

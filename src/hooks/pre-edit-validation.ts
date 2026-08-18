@@ -41,27 +41,10 @@ import {
 } from './helpers/validation-cache.js';
 import { getSession, setDenialInfo, clearSession as clearSessionEntry } from './helpers/validation-sessions.js';
 import { shouldStandDown } from './helpers/circuit-breaker.js';
-import { shouldSkipValidation } from './helpers/skip-validation.js';
+import { shouldSkipValidation, isPythonFile, requiresCodeIndex } from './helpers/skip-validation.js';
 import { validatePythonEdit } from './helpers/py-validate.js';
 import crypto from 'crypto';
 import { resolveConfig, ensureDirectories } from '../config.js';
-
-/**
- * @what Determines whether a file path is a Python source file
- * @how Lower-cases the path and checks for a trailing `.py` extension
- * @why validateEdit dispatches Python files to the dedicated validatePythonEdit path instead of the ts-morph pipeline
- *
- * @param {string} fp Absolute path to the file being edited
- * @returns {boolean} True if the file is a `.py` source
- *
- * @sideeffects None
- * @systemlayer Filtering
- * @domain file-filtering, language-detection, python-support
- * @tags language-detection, python, filtering, extension-check
- */
-function isPythonFile(fp: string): boolean {
-  return fp.toLowerCase().endsWith('.py');
-}
 
 // Logging
 const hookConfig = resolveConfig();
@@ -70,13 +53,15 @@ const LOG_PATH = hookConfig.logPath;
 
 /**
  * @what Main entry point for the pre-edit validation hook
- * @how Reads stdin, validates edit against code index and headless Claude, returns allow/deny decision
+ * @how Parses the stdin HookInput, filters to Edit/Write, sets project context from the edited file, applies the skip-list, gates on TS code-index availability (Python bypasses this gate), runs validateEdit (which dispatches TypeScript vs Python), writes the allow/deny decision, and fails open on any error
  * @why Claude Code executes this hook before Edit/Write operations to enforce code quality
  *
- * @sideeffects Reads stdin, executes validation, writes logs, exits with 0 or 2
+ * @returns {Promise<void>} Resolves once the allow/deny decision has been written to stdout and process.exitCode set
+ *
+ * @sideeffects Reads stdin, sets project context, executes validation (may spawn headless Claude), writes to the validation debug log, writes the decision JSON to stdout, sets process.exitCode (never calls process.exit, per the Exit Discipline invariant)
  * @systemlayer Hook Entry
- * @domain hook-execution, validation-orchestration
- * @tags hook-main, entry-point, validation-flow, orchestration, stdin-processing
+ * @domain hook-execution, validation-orchestration, fail-open
+ * @tags hook-main, entry-point, validation-flow, fail-open, python-bypass
  */
 async function main() {
   try {
@@ -114,8 +99,11 @@ async function main() {
       return allowAndExit(`Skipping validation for ${filePath}`);
     }
 
-    // Check if code index is available — fail open if not
-    if (!isIndexAvailable()) {
+    // Check if code index is available — fail open if not.
+    // Python files bypass this gate: validatePythonEdit is self-contained and needs
+    // no TS code index, so an absent index must not skip Python validation entirely
+    // (a Python-only project would otherwise never be validated).
+    if (requiresCodeIndex(filePath) && !isIndexAvailable()) {
       log('Code index database not available — allowing edit (fail-open)');
       return allowAndExit('Code index unavailable (fail-open)');
     }
