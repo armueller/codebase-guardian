@@ -158,6 +158,7 @@ interface FunctionRow {
   side_effects: string | null;
   system_layer: string | null;
   tier: number;
+  language: 'ts' | 'py';
 }
 
 /**
