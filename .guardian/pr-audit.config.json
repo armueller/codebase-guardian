@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "baseline": {
+    "typecheck": "npx tsc --noEmit",
+    "lint": null,
+    "test": "npm test"
+  },
+  "docDirs": ["docs"],
+  "staffReview": {
+    "minDiffLinesForFullPass": 100
+  },
+  "impact": {
+    "depth": 2
+  },
+  "suggestionStaging": {
+    "filePath": ".guardian/suggestions.md",
+    "clearAfterAudit": true
+  },
+  "marker": {
+    "commentMarker": "<!-- pr-audit:v1 -->",
+    "ciCheckJob": null
+  },
+  "deferredBugProtocol": {
+    "requireGitHubIssue": true,
+    "repo": "armueller/codebase-guardian"
+  },
+  "plan": {
+    "vaultDir": "~/Dropbox/Obsidian/Project Plans/codebase-guardian"
+  },
+  "checklistsFile": ".guardian/pr-audit.checklists.md"
+}
