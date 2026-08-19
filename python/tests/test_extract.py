@@ -9,6 +9,16 @@ def _units_by_name(result):
     return {u["name"]: u for u in result["units"]}
 
 
+def test_all_does_not_suppress_public_method_export():
+    # __all__ governs MODULE-level exports only; a public method not in __all__ must
+    # still report is_exported=True (else its docstring requirement silently vanishes
+    # for every module disciplined enough to declare __all__). Regression for Q2.
+    units = _units_by_name(extract_file(os.path.join(FIX, "all_with_method.py")))
+    assert units["Widget"]["is_exported"] is True  # in __all__
+    assert units["to_dict"]["is_exported"] is True  # public method, NOT in __all__
+    assert units["_private"]["is_exported"] is False  # underscore-private method
+
+
 def test_module_metadata():
     result = extract_file(os.path.join(FIX, "models_sample.py"))
     assert result["language"] == "py"

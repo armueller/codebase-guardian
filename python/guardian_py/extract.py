@@ -93,8 +93,12 @@ def _exported_names(tree: ast.Module) -> set[str] | None:
     return None
 
 
-def _is_exported(name: str, exported: set[str] | None) -> bool:
-    if exported is not None:
+def _is_exported(name: str, exported: set[str] | None, is_module_level: bool = True) -> bool:
+    # __all__ governs MODULE-level exports only — it never lists methods or nested
+    # names. Applying it to a method would mark every public method non-exported
+    # (and silently drop its docstring requirement in the hook), so methods fall
+    # back to the underscore convention regardless of __all__.
+    if is_module_level and exported is not None:
         return name in exported
     return not name.startswith("_")
 
@@ -181,7 +185,7 @@ def _class_unit(
         "parent": parent,
         "line": node.lineno,
         "end_line": getattr(node, "end_lineno", node.lineno),
-        "is_exported": _is_exported(node.name, exported),
+        "is_exported": _is_exported(node.name, exported, is_module_level=parent is None),
         "decorators": decorators,
         "summary": _summary(doc),
         "docstring": doc,
@@ -199,7 +203,7 @@ def _func_unit(node, exported: set[str] | None, *, kind: str, parent: str | None
         "parent": parent,
         "line": node.lineno,
         "end_line": getattr(node, "end_lineno", node.lineno),
-        "is_exported": _is_exported(node.name, exported),
+        "is_exported": _is_exported(node.name, exported, is_module_level=parent is None),
         "decorators": _decorators(node),
         "summary": _summary(doc),
         "docstring": doc,

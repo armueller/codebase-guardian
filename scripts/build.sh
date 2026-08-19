@@ -60,7 +60,8 @@ fi
 # for the Python validation path). OPTIONAL and fail-open: any failure only disables
 # Python validation — it never fails the build or the TypeScript path. The guardian_py
 # helper source itself travels in $APP/python (synced above); this only builds the venv.
-if command -v python3 >/dev/null 2>&1; then
+if command -v python3 >/dev/null 2>&1 \
+   && python3 -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, 9) else 1)' >/dev/null 2>&1; then
   PYENV_DIR="$DATA/pyenv"
   [ -x "$PYENV_DIR/bin/python" ] || python3 -m venv "$PYENV_DIR" >>"$DATA/bootstrap.log" 2>&1 \
     || log "WARN: venv creation failed — Python validation disabled"
@@ -72,6 +73,8 @@ if command -v python3 >/dev/null 2>&1; then
       log "WARN: pip install of Python toolchain failed — Python validation disabled"
     fi
   fi
+elif command -v python3 >/dev/null 2>&1; then
+  log "WARN: python3 is $(python3 -V 2>&1) but guardian_py needs >= 3.9 — Python validation disabled (TypeScript unaffected)"
 else
   log "WARN: python3 not found — Python validation disabled (TypeScript unaffected)"
 fi

@@ -258,7 +258,7 @@ function buildPythonRelatedCodeSection(patternContext: PatternContext): string {
 /**
  * @what Builds the full first-attempt validation prompt for a proposed Python edit
  * @how Assembles the pragmatic Python convention, the deterministic ruff/pydoclint findings, the local doc-completeness violations, the module metadata, the proposed functions/classes as UNITS, the pre-injected RELATED CODE IN THE INDEX section (via buildPythonRelatedCodeSection), an index-availability note, the WARN-NOT-DENY notice, an optional syntax-note, and the shared JSON-only response contract into one prompt string. The Python path runs under a neutral system prompt (PY_SYSTEM_PROMPT); everything substantive — convention, findings, criteria, injected context, and the response contract — lives in this single user-prompt string.
- * @why P3.5: the Python validation path now has code index coverage (P3.3 definitions + P3.4 call edges) and must bias toward allow-with-suggestion (pyright/ruff run in CI, not here) — this prompt carries both the injected cross-file context and that leniency constraint so headless Claude gets real DRY/pattern signal without re-deriving TypeScript's stricter decision logic
+ * @why P3.5: the Python validation path now has code index coverage (P3.3 definitions + P3.4 call edges) and must bias toward allow-with-suggestion (static type checking is out of scope for this edit-time hook) — this prompt carries both the injected cross-file context and that leniency constraint so headless Claude gets real DRY/pattern signal without re-deriving TypeScript's stricter decision logic
  *
  * @param {object} context Validation context for the proposed Python edit
  * @param {string} context.filePath File being edited
@@ -313,7 +313,7 @@ ${syntaxSection}
 
 ${formatPyToolFindings(toolFindings)}
 
-ruff and pyright style/type checks are ALSO enforced in CI — do not re-litigate style; treat the findings above as settled facts, not things to independently re-derive.
+The ruff/pydoclint findings above are the deterministic checks for this edit — do not re-litigate style; treat them as settled facts, not things to independently re-derive. Static type checking is out of scope for this edit-time hook.
 
 == LOCAL DOC-COMPLETENESS ==
 
@@ -333,7 +333,7 @@ A Python-aware semantic code index now covers this project, and the RELATED CODE
 
 == WARN-NOT-DENY (critical) ==
 
-Python is dynamically typed and pyright runs in CI, not here. Bias STRONGLY toward allow-with-suggestion on any runtime/type/attribute/API concern. Deny ONLY for a clear in-this-code contradiction: a docstring that plainly lies about what the body does, a real DRY duplication visible in the shown code, or a missing required docstring/Domain per the convention above.
+Python is dynamically typed, and static type checking is out of scope for this edit-time hook. Bias STRONGLY toward allow-with-suggestion on any runtime/type/attribute/API concern. Deny ONLY for a clear in-this-code contradiction: a docstring that plainly lies about what the body does, a real DRY duplication visible in the shown code, or a missing required docstring/Domain per the convention above.
 
 ${PY_RESPONSE_CONTRACT}`;
 }
