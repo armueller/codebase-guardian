@@ -10,11 +10,9 @@
  */
 
 import { execFileSync } from 'child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
 import path from 'path';
-import { getGuardianHome } from '../../../config.js';
 import { fileURLToPath } from 'url';
+import { resolvePyenvBin, withPyScratchFile } from '../py-exec.js';
 import type { ExtractedClass, ExtractedFunction } from '../types.js';
 
 // ─── guardian_py JSON contract (subset consumed here) ───────────────────────
@@ -257,80 +255,67 @@ export function extractPython(
   postEditContent: string,
   opts?: { timeoutMs?: number }
 ): PyExtractResult {
-  const guardianHome = getGuardianHome();
-  const pyBin = path.join(guardianHome, 'pyenv', 'bin', 'python');
+  const pyBin = resolvePyenvBin('python');
+  if (!pyBin) {
+    return { ok: false, reason: 'unavailable' };
+  }
   // The guardian_py helper source ships next to the compiled code, not under the
   // data dir — resolve it relative to this module: dev → <repo>/python, plugin →
   // $CLAUDE_PLUGIN_DATA/app/python (both are four levels up from adapters/).
   const pyPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../python');
 
-  if (!existsSync(pyBin)) {
-    return { ok: false, reason: 'unavailable' };
-  }
-
-  let tmpDir: string | null = null;
   try {
-    tmpDir = mkdtempSync(path.join(tmpdir(), 'guardian-py-'));
-    const tmpFile = path.join(tmpDir, 'edit.py');
-    writeFileSync(tmpFile, postEditContent, 'utf-8');
-
-    let stdout: string;
-    try {
-      stdout = execFileSync(pyBin, ['-m', 'guardian_py', 'extract', tmpFile], {
-        timeout: opts?.timeoutMs ?? 5000,
-        encoding: 'utf-8',
-        env: { ...process.env, PYTHONPATH: pyPath },
-      });
-    } catch (e) {
-      return { ok: false, reason: 'error', detail: `guardian_py extract failed: ${(e as Error)?.message ?? 'unknown error'}` };
-    }
-
-    let payload: PyExtractPayload;
-    try {
-      payload = JSON.parse(stdout);
-    } catch {
-      return { ok: false, reason: 'error', detail: 'guardian_py output was not valid JSON' };
-    }
-
-    if (payload.error === 'syntax') {
-      return { ok: false, reason: 'syntax' };
-    }
-    if (payload.error) {
-      return { ok: false, reason: 'error', detail: `guardian_py reported: ${payload.error}` };
-    }
-
-    const functions: ExtractedFunction[] = [];
-    const classes: ExtractedClass[] = [];
-
-    for (const unit of payload.units ?? []) {
-      if (unit.kind === 'function' || unit.kind === 'method') {
-        functions.push(mapFunctionUnit(unit));
-      } else {
-        classes.push(mapClassUnit(unit));
-      }
-    }
-
-    const moduleMeta = payload.module;
-    return {
-      ok: true,
-      functions,
-      classes,
-      module: {
-        docstring: moduleMeta?.docstring ?? null,
-        domains: moduleMeta?.domains ?? [],
-        tags: moduleMeta?.tags ?? [],
-        layer: moduleMeta?.layer ?? null,
-      },
-    };
-  } catch {
-    return { ok: false, reason: 'error' };
-  } finally {
-    if (tmpDir) {
+    return withPyScratchFile(filePath, postEditContent, (tmpFile): PyExtractResult => {
+      let stdout: string;
       try {
-        rmSync(tmpDir, { recursive: true, force: true });
-      } catch {
-        // Best-effort cleanup — never let temp dir removal failures surface.
+        stdout = execFileSync(pyBin, ['-m', 'guardian_py', 'extract', tmpFile], {
+          timeout: opts?.timeoutMs ?? 5000,
+          encoding: 'utf-8',
+          env: { ...process.env, PYTHONPATH: pyPath },
+        });
+      } catch (e) {
+        return { ok: false, reason: 'error', detail: `guardian_py extract failed: ${(e as Error)?.message ?? 'unknown error'}` };
       }
-    }
+
+      let payload: PyExtractPayload;
+      try {
+        payload = JSON.parse(stdout);
+      } catch {
+        return { ok: false, reason: 'error', detail: 'guardian_py output was not valid JSON' };
+      }
+
+      if (payload.error === 'syntax') {
+        return { ok: false, reason: 'syntax' };
+      }
+      if (payload.error) {
+        return { ok: false, reason: 'error', detail: `guardian_py reported: ${payload.error}` };
+      }
+
+      const functions: ExtractedFunction[] = [];
+      const classes: ExtractedClass[] = [];
+
+      for (const unit of payload.units ?? []) {
+        if (unit.kind === 'function' || unit.kind === 'method') {
+          functions.push(mapFunctionUnit(unit));
+        } else {
+          classes.push(mapClassUnit(unit));
+        }
+      }
+
+      const moduleMeta = payload.module;
+      return {
+        ok: true,
+        functions,
+        classes,
+        module: {
+          docstring: moduleMeta?.docstring ?? null,
+          domains: moduleMeta?.domains ?? [],
+          tags: moduleMeta?.tags ?? [],
+          layer: moduleMeta?.layer ?? null,
+        },
+      };
+    });
+  } catch (e) {
+    return { ok: false, reason: 'error', detail: `python extraction failed: ${(e as Error)?.message ?? 'unknown error'}` };
   }
 }

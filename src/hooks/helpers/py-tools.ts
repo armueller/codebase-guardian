@@ -5,10 +5,9 @@
  */
 
 import { execFileSync } from 'child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { existsSync } from 'fs';
 import path from 'path';
-import { getGuardianHome } from '../../config.js';
+import { resolvePyenvBin, withPyScratchFile } from './py-exec.js';
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
@@ -221,7 +220,7 @@ function runPydoclint(pydoclintBin: string, tmpFile: string, timeoutMs: number, 
 
 /**
  * @what Runs ruff and pydoclint against a proposed Python edit and returns their findings
- * @how Resolves the guardian-pinned binaries under `<GUARDIAN_HOME>/pyenv/bin`; a missing binary makes that tool's result []. Writes postEditContent to a mkdtempSync scratch .py file (always removed via finally), then runs each tool independently — a failure in one tool never affects the other.
+ * @how Resolves the guardian-pinned binaries via resolvePyenvBin (a missing binary makes that tool's result []). Writes postEditContent to a scratch .py file via withPyScratchFile (named after the edited file's basename so path-scoped tool config can match; always cleaned up), then runs each tool independently — a failure in one tool never affects the other.
  * @why Gives the Python hook path deterministic findings to fold into the validation prompt, without depending on either tool being installed or on either tool succeeding
  *
  * @param {string} filePath File path being edited (used only to locate the nearest pyproject.toml for ruff config; the actual disk read is from a scratch temp file)
@@ -241,55 +240,40 @@ export function runPyTools(
 ): PyToolResults {
   const timeoutMs = opts?.timeoutMs ?? 8000;
   const onError = opts?.onError;
-  const guardianHome = getGuardianHome();
-  const ruffBin = path.join(guardianHome, 'pyenv', 'bin', 'ruff');
-  const pydoclintBin = path.join(guardianHome, 'pyenv', 'bin', 'pydoclint');
+  const ruffBin = resolvePyenvBin('ruff');
+  const pydoclintBin = resolvePyenvBin('pydoclint');
 
-  const ruffAvailable = existsSync(ruffBin);
-  const pydoclintAvailable = existsSync(pydoclintBin);
-
-  if (!ruffAvailable && !pydoclintAvailable) {
+  if (!ruffBin && !pydoclintBin) {
     return { ruff: [], pydoclint: [] };
   }
 
-  let tmpDir: string | null = null;
   try {
-    tmpDir = mkdtempSync(path.join(tmpdir(), 'guardian-py-tools-'));
-    const tmpFile = path.join(tmpDir, 'edit.py');
-    writeFileSync(tmpFile, postEditContent, 'utf-8');
-
-    let ruff: PyFinding[] = [];
-    if (ruffAvailable) {
-      try {
-        const nearestPyproject = findNearestPyproject(filePath);
-        ruff = runRuff(ruffBin, tmpFile, nearestPyproject, timeoutMs, onError);
-      } catch (e) {
-        onError?.(`ruff runner threw: ${(e as Error)?.message ?? 'unknown error'}`);
-        ruff = [];
+    return withPyScratchFile(filePath, postEditContent, (tmpFile) => {
+      let ruff: PyFinding[] = [];
+      if (ruffBin) {
+        try {
+          const nearestPyproject = findNearestPyproject(filePath);
+          ruff = runRuff(ruffBin, tmpFile, nearestPyproject, timeoutMs, onError);
+        } catch (e) {
+          onError?.(`ruff runner threw: ${(e as Error)?.message ?? 'unknown error'}`);
+          ruff = [];
+        }
       }
-    }
 
-    let pydoclint: PyFinding[] = [];
-    if (pydoclintAvailable) {
-      try {
-        pydoclint = runPydoclint(pydoclintBin, tmpFile, timeoutMs, onError);
-      } catch (e) {
-        onError?.(`pydoclint runner threw: ${(e as Error)?.message ?? 'unknown error'}`);
-        pydoclint = [];
+      let pydoclint: PyFinding[] = [];
+      if (pydoclintBin) {
+        try {
+          pydoclint = runPydoclint(pydoclintBin, tmpFile, timeoutMs, onError);
+        } catch (e) {
+          onError?.(`pydoclint runner threw: ${(e as Error)?.message ?? 'unknown error'}`);
+          pydoclint = [];
+        }
       }
-    }
 
-    return { ruff, pydoclint };
+      return { ruff, pydoclint };
+    });
   } catch (e) {
     onError?.(`py-tools scratch-file setup failed: ${(e as Error)?.message ?? 'unknown error'}`);
     return { ruff: [], pydoclint: [] };
-  } finally {
-    if (tmpDir) {
-      try {
-        rmSync(tmpDir, { recursive: true, force: true });
-      } catch {
-        // Best-effort cleanup — never let temp dir removal failures surface.
-      }
-    }
   }
 }
