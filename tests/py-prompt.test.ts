@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildPythonFirstAttemptPrompt,
   buildPythonRetryPrompt,
-} from '../src/hooks/helpers/claude-headless.js';
+} from '../src/hooks/helpers/py-prompts.js';
 import type { ExtractedFunction, ExtractedClass } from '../src/hooks/helpers/types.js';
 import type { PyFinding } from '../src/hooks/helpers/py-tools.js';
 import type { PatternContext, FunctionResult } from '../src/hooks/helpers/code-index-client.js';

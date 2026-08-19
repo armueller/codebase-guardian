@@ -30,12 +30,12 @@ import { extractPython } from './adapters/py-adapter.js';
 import { runPyTools } from './py-tools.js';
 import { markUnitNovelty, checkPythonDocCompleteness, qualifiedUnitName } from './py-doc-check.js';
 import { resolveSessionState, recordValidationOutcome } from './validation-flow.js';
+import { executeClaudeHeadless } from './claude-headless.js';
 import {
-  executeClaudeHeadless,
   buildPythonFirstAttemptPrompt,
   buildPythonRetryPrompt,
   PY_SYSTEM_PROMPT
-} from './claude-headless.js';
+} from './py-prompts.js';
 import { buildPatternContext, type PatternContext } from './code-index-client.js';
 import {
   getCachedValidation,
