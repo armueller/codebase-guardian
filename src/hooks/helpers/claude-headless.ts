@@ -380,8 +380,10 @@ export async function executeClaudeHeadless(params: {
   systemPrompt?: string;
   useMcp?: boolean;
   allowedTools?: string[];
+  permissionMode?: string;
+  disallowedTools?: string[];
 }): Promise<ClaudeValidationResponse> {
-  const { outerSessionId, filePath, prompt, isRetry, timeoutMs = 30000, systemPrompt = SYSTEM_PROMPT, useMcp = true, allowedTools } = params;
+  const { outerSessionId, filePath, prompt, isRetry, timeoutMs = 30000, systemPrompt = SYSTEM_PROMPT, useMcp = true, allowedTools, permissionMode = 'bypassPermissions', disallowedTools } = params;
   const sessionKey = `${outerSessionId}:${filePath}`;
   const overallStart = Date.now();
 
@@ -393,11 +395,11 @@ export async function executeClaudeHeadless(params: {
 
   if (existingSession) {
     log(`  [HEADLESS] Resuming session ${existingSession.headlessSessionId} (attempt #${existingSession.attemptCount + 1})`);
-    return executeWithResume(existingSession.headlessSessionId, prompt, sessionKey, existingSession.attemptCount, timeoutMs, overallStart, useMcp, allowedTools);
+    return executeWithResume(existingSession.headlessSessionId, prompt, sessionKey, existingSession.attemptCount, timeoutMs, overallStart, useMcp, allowedTools, permissionMode, disallowedTools);
   }
 
   log(`  [HEADLESS] First attempt for ${sessionKey}`);
-  return executeFirstAttempt(prompt, sessionKey, timeoutMs, overallStart, systemPrompt, useMcp, allowedTools);
+  return executeFirstAttempt(prompt, sessionKey, timeoutMs, overallStart, systemPrompt, useMcp, allowedTools, permissionMode, disallowedTools);
 }
 
 /**
@@ -426,7 +428,9 @@ async function executeFirstAttempt(
   overallStart: number,
   systemPrompt: string,
   useMcp: boolean,
-  allowedTools?: string[]
+  allowedTools?: string[],
+  permissionMode: string = 'bypassPermissions',
+  disallowedTools?: string[]
 ): Promise<ClaudeValidationResponse> {
   try {
     log(`  [HEADLESS] Starting first attempt with ${timeoutMs}ms timeout...`);
@@ -437,7 +441,7 @@ async function executeFirstAttempt(
       '-p', prompt,
       '--system-prompt', systemPrompt,
       '--output-format', 'json',
-      '--permission-mode', 'bypassPermissions',
+      '--permission-mode', permissionMode,
       '--model', 'opus',
     ];
     if (mcpConfig) {
@@ -445,6 +449,9 @@ async function executeFirstAttempt(
     }
     if (allowedTools && allowedTools.length > 0) {
       cliArgs.push('--allowedTools', allowedTools.join(','));
+    }
+    if (disallowedTools && disallowedTools.length > 0) {
+      cliArgs.push('--disallowedTools', disallowedTools.join(','));
     }
 
     const t2 = Date.now();
@@ -505,7 +512,9 @@ async function executeWithResume(
   timeoutMs: number,
   overallStart: number,
   useMcp: boolean,
-  allowedTools?: string[]
+  allowedTools?: string[],
+  permissionMode: string = 'bypassPermissions',
+  disallowedTools?: string[]
 ): Promise<ClaudeValidationResponse> {
   try {
     log(`  [HEADLESS] Resuming session ${headlessSessionId} (attempt #${previousAttemptCount + 1})...`);
@@ -515,7 +524,7 @@ async function executeWithResume(
       '--resume', headlessSessionId,
       '-p', prompt,
       '--output-format', 'json',
-      '--permission-mode', 'bypassPermissions',
+      '--permission-mode', permissionMode,
       '--model', 'opus',
     ];
     if (mcpConfig) {
@@ -523,6 +532,9 @@ async function executeWithResume(
     }
     if (allowedTools && allowedTools.length > 0) {
       cliArgs.push('--allowedTools', allowedTools.join(','));
+    }
+    if (disallowedTools && disallowedTools.length > 0) {
+      cliArgs.push('--disallowedTools', disallowedTools.join(','));
     }
 
     const t2 = Date.now();

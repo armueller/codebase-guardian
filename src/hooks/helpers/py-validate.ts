@@ -65,6 +65,19 @@ const PY_INDEX_TOOLS = [
   'mcp__codebase-guardian__index_status',
 ];
 
+// Tools explicitly stripped from the Python validator's headless agent. Under
+// `--permission-mode dontAsk`, anything not in --allowedTools is auto-denied
+// without prompting — EXCEPT read-only Bash (cat/grep/find), which dontAsk still
+// auto-allows and which is exactly the filesystem exploration we must prevent.
+// Listing these in --disallowedTools removes them from the agent's context
+// entirely, so the "no filesystem tools" system-prompt claim actually holds and
+// the 120s timeout is safe. (NB: `--allowedTools` is a no-op under the previous
+// `bypassPermissions` mode — see the permissionMode change on the call below.)
+const PY_DISALLOWED_TOOLS = [
+  'Bash', 'Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit',
+  'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Task',
+];
+
 // An all-empty PatternContext, returned when buildPatternContext is unavailable or
 // throws (no index yet, corrupt DB, etc.) so a missing Python index can never break
 // or block a Python edit — see the defensive buildPatternContext call below.
@@ -333,12 +346,16 @@ export async function validatePythonEdit(
         // TypeScript path's timeout.
         timeoutMs: 120000,
         // Python gets a neutral system prompt (not the TS JSDoc/"err-toward-deny" one).
-        // The code index now covers Python (P3.3/P3.4), so useMcp is on — but bounded
-        // to PY_INDEX_TOOLS (no Read/Bash/Grep/Glob/Write/Edit) so the agent can only
-        // query the index, never wander the filesystem.
+        // The code index now covers Python (P3.3/P3.4), so useMcp is on — bounded to
+        // PY_INDEX_TOOLS via `dontAsk` (NOT the TS path's `bypassPermissions`, under
+        // which --allowedTools is a no-op) plus PY_DISALLOWED_TOOLS to strip read-only
+        // Bash. Together: the agent can only query the index, never touch the
+        // filesystem — which is what makes the 120s timeout safe.
         systemPrompt: PY_SYSTEM_PROMPT,
         useMcp: true,
-        allowedTools: PY_INDEX_TOOLS
+        allowedTools: PY_INDEX_TOOLS,
+        permissionMode: 'dontAsk',
+        disallowedTools: PY_DISALLOWED_TOOLS
       });
       log(`[PY][TIMING] Headless Claude execution: ${Date.now() - t9}ms`);
       log(`[PY] Decision: ${validationResult.decision}`);
