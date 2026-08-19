@@ -196,6 +196,7 @@ function buildFunctionFullCode(unit: PyUnit): string {
 function mapFunctionUnit(unit: PyUnit): ExtractedFunction {
   return {
     name: unit.name,
+    parent: unit.parent,
     fullCode: buildFunctionFullCode(unit),
     hasJSDoc: unit.docstring != null,
     isNew: false,

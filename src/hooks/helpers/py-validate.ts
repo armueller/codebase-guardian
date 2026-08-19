@@ -28,7 +28,7 @@ import { appendFileSync, existsSync, statSync, renameSync } from 'fs';
 import { HookInput, HookResponse } from './types.js';
 import { extractPython } from './adapters/py-adapter.js';
 import { runPyTools } from './py-tools.js';
-import { markUnitNovelty, checkPythonDocCompleteness } from './py-doc-check.js';
+import { markUnitNovelty, checkPythonDocCompleteness, qualifiedUnitName } from './py-doc-check.js';
 import { resolveSessionState, recordValidationOutcome } from './validation-flow.js';
 import {
   executeClaudeHeadless,
@@ -224,8 +224,8 @@ export async function validatePythonEdit(
     if (currentFileOnDisk) {
       const oldExtracted = extractPython(filePath, currentFileOnDisk, { timeoutMs: 5000 });
       if (oldExtracted.ok) {
-        for (const fn of oldExtracted.functions) oldUnitNames.add(fn.name);
-        for (const cls of oldExtracted.classes) oldUnitNames.add(cls.name);
+        for (const fn of oldExtracted.functions) oldUnitNames.add(qualifiedUnitName(fn));
+        for (const cls of oldExtracted.classes) oldUnitNames.add(qualifiedUnitName(cls));
       }
     }
     markUnitNovelty(oldUnitNames, extracted.functions, extracted.classes);

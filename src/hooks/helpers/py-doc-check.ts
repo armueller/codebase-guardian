@@ -12,6 +12,24 @@
 import { ExtractedClass, ExtractedFunction } from './types.js';
 
 /**
+ * @what Qualified unit name that disambiguates same-named methods across classes in one file
+ * @how Returns `Parent.name` when the unit has an enclosing class (a Python method), else the bare name
+ * @why Bare method names collide (two classes each with `to_dict`), which silently collapsed novelty
+ *   marking and doc-violation entries onto one key. Qualifying by parent keeps them distinct.
+ *
+ * @param {{ name: string; parent?: string | null }} unit Extracted function/method or class
+ * @returns {string} `Parent.name` for a method, otherwise the bare name
+ *
+ * @sideeffects None
+ * @systemlayer Validation
+ * @domain python-support, novelty-tracking
+ * @tags python, method-disambiguation, naming
+ */
+export function qualifiedUnitName(unit: { name: string; parent?: string | null }): string {
+  return unit.parent ? `${unit.parent}.${unit.name}` : unit.name;
+}
+
+/**
  * @what Marks each proposed Python function/class as new or modified by comparing its name against the pre-edit file's unit names
  * @how For each function and class, looks up `name` in `oldUnitNames`: present → isModified=true/isNew=false, absent → isNew=true/isModified=false. Mutates the passed-in arrays in place.
  * @why The guardian_py extractor has no diff view of the file, so novelty must be determined in Node by set-membership — mirrors how the TypeScript path (function-extractor.ts) distinguishes NEW vs MODIFIED functions for the validation prompt
@@ -32,12 +50,12 @@ export function markUnitNovelty(
   classes: ExtractedClass[]
 ): void {
   for (const fn of functions) {
-    const existed = oldUnitNames.has(fn.name);
+    const existed = oldUnitNames.has(qualifiedUnitName(fn));
     fn.isNew = !existed;
     fn.isModified = existed;
   }
   for (const cls of classes) {
-    const existed = oldUnitNames.has(cls.name);
+    const existed = oldUnitNames.has(qualifiedUnitName(cls));
     cls.isNew = !existed;
     cls.isModified = existed;
   }
@@ -87,14 +105,14 @@ export function checkPythonDocCompleteness(
       classViolations.push(`class '${cls.name}' docstring is missing a 'Domain:' line`);
     }
     if (classViolations.length > 0) {
-      violations.set(cls.name, classViolations);
+      violations.set(qualifiedUnitName(cls), classViolations);
     }
   }
 
   for (const fn of functions) {
     if (!fn.requiresJSDoc) continue; // private/unexported functions have no docstring requirement
     if (!fn.hasJSDoc) {
-      violations.set(fn.name, [`public function '${fn.name}' is missing a docstring`]);
+      violations.set(qualifiedUnitName(fn), [`public function '${fn.name}' is missing a docstring`]);
     }
   }
 

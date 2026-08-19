@@ -16,6 +16,8 @@
  */
 export interface ExtractedFunction {
   name: string;
+  parent?: string | null;  // Enclosing class for a method (Python), else null/undefined. Used to
+                           // disambiguate same-named methods across classes in one file.
   fullCode: string;        // JSDoc comment + function body (if JSDoc exists)
   hasJSDoc: boolean;       // Whether JSDoc was found above function
   isNew: boolean;          // Function is being created in this edit (not in old_string)
