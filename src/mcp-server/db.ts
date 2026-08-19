@@ -14,6 +14,7 @@ export interface FunctionRecord {
   side_effects: string | null;
   system_layer: string | null;
   tier: number;
+  language: 'ts' | 'py';
 }
 
 export interface FunctionResult extends FunctionRecord {
@@ -118,7 +119,8 @@ const SCHEMA_SQL = `
     declaration_type TEXT NOT NULL DEFAULT 'function',
     side_effects TEXT,
     system_layer TEXT,
-    tier INTEGER NOT NULL DEFAULT 1
+    tier INTEGER NOT NULL DEFAULT 1,
+    language TEXT NOT NULL DEFAULT 'ts'
   );
 
   -- Many-to-many: function -> domains
@@ -282,6 +284,22 @@ export function openDatabase(dbPath: string): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA_SQL);
+
+  // Migration: SCHEMA_SQL uses CREATE TABLE IF NOT EXISTS, so existing per-project
+  // DBs created before the `language` column existed won't pick it up from the
+  // schema string above. ALTER TABLE ADD COLUMN has no "IF NOT EXISTS" form in
+  // SQLite, so we run it unconditionally and swallow the "duplicate column name"
+  // error it throws on DBs that already have the column (including brand-new DBs,
+  // where SCHEMA_SQL already created it). This keeps openDatabase() idempotent
+  // across both fresh and pre-existing databases without a separate migrations table.
+  try {
+    db.exec("ALTER TABLE functions ADD COLUMN language TEXT NOT NULL DEFAULT 'ts'");
+  } catch (err) {
+    if (!(err instanceof Error) || !/duplicate column name/i.test(err.message)) {
+      throw err;
+    }
+  }
+
   return db;
 }
 
@@ -299,11 +317,12 @@ export function insertFunction(
     side_effects: string | null;
     system_layer: string | null;
     tier: number;
+    language?: 'ts' | 'py';
   }
 ): number {
   const stmt = db.prepare(`
-    INSERT INTO functions (name, description, file_path, line_number, is_exported, declaration_type, side_effects, system_layer, tier)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO functions (name, description, file_path, line_number, is_exported, declaration_type, side_effects, system_layer, tier, language)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const result = stmt.run(
     func.name,
@@ -314,7 +333,8 @@ export function insertFunction(
     func.declaration_type,
     func.side_effects,
     func.system_layer,
-    func.tier
+    func.tier,
+    func.language ?? 'ts'
   );
   return Number(result.lastInsertRowid);
 }
@@ -615,6 +635,12 @@ export function getFunctionByName(db: Database.Database, name: string, filePath?
   } else {
     row = db.prepare('SELECT * FROM functions WHERE name = ? LIMIT 1').get(name) as FunctionRecord | undefined;
   }
+  if (!row) return null;
+  return hydrateFunction(db, row);
+}
+
+export function getFunctionByFileAndLine(db: Database.Database, filePath: string, line: number): FunctionResult | null {
+  const row = db.prepare('SELECT * FROM functions WHERE file_path = ? AND line_number = ? LIMIT 1').get(filePath, line) as FunctionRecord | undefined;
   if (!row) return null;
   return hydrateFunction(db, row);
 }

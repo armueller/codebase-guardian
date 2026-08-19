@@ -66,7 +66,7 @@ const DEFAULT_EXCLUDE = [
   '__snapshots__', '.next', '.turbo', 'coverage',
 ];
 
-const DEFAULT_EXTENSIONS = ['.ts', '.tsx'];
+const DEFAULT_EXTENSIONS = ['.ts', '.tsx', '.py'];
 
 const DEFAULT_JSDOC = {
   requiredTags: ['what', 'how', 'why', 'sideeffects', 'systemlayer', 'domain', 'tags'],

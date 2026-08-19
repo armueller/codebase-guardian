@@ -6,4 +6,9 @@ dist/
 .validation-sessions.json
 *.log
 *.log.old
-.guardian/
+# Ignore Guardian's runtime output (suggestions.md, caches) but keep committed
+# per-project config for the pr-audit skill. Must be `.guardian/*` (not
+# `.guardian/`) so the `!` un-ignores below take effect.
+.guardian/*
+!.guardian/pr-audit.config.json
+!.guardian/pr-audit.checklists.md

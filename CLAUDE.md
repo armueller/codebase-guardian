@@ -48,22 +48,35 @@ src/
 ├── mcp-server/             # MCP server (ESM, runs via node)
 │   ├── index.ts            # Tool handlers + server setup
 │   ├── db.ts               # SQLite schema + CRUD (better-sqlite3)
-│   ├── indexer.ts           # Phase 1: JSDoc & doc parsing
-│   ├── call-graph.ts        # Phase 2: Call graph + export discovery (ts-morph)
+│   ├── indexer.ts           # Phase 1: JSDoc & doc parsing + Python module/unit indexing
+│   ├── call-graph.ts        # Phase 2: TS call graph + export discovery (ts-morph)
+│   ├── py-index.ts          # Python extraction bridge: guardian_py `extract` → raw JSON for the indexer
+│   ├── py-call-graph.ts     # Python call graph: guardian_py `callgraph` (Jedi) → call_edges rows
 │   ├── embeddings.ts        # HuggingFace vector embeddings (local, no API)
 │   └── build-index.ts       # CLI entry point for index rebuilds
 ├── hooks/                   # PreToolUse hook (CJS via tsx, reads stdin)
-│   ├── pre-edit-validation.ts  # Hook orchestrator
+│   ├── pre-edit-validation.ts  # Hook orchestrator — dispatches .py to the Python path, else the TS path
 │   └── helpers/
-│       ├── types.ts            # Shared type definitions
-│       ├── function-extractor.ts # Extract functions + JSDoc from edit diff
-│       ├── code-analyzer.ts     # Analyze called functions, types, properties
-│       ├── jsdoc-parser.ts      # Parse and validate JSDoc tags (local, no AI)
-│       ├── claude-headless.ts   # Execute headless Claude for AI validation
-│       ├── code-index-client.ts # Direct SQLite queries (readonly)
+│       ├── types.ts            # Shared type definitions (ExtractedFunction/ExtractedClass, TS + Python)
+│       ├── function-extractor.ts # Extract functions + JSDoc from edit diff (TS)
+│       ├── code-analyzer.ts     # Analyze called functions, types, properties (TS)
+│       ├── jsdoc-parser.ts      # Parse and validate JSDoc tags (TS, local, no AI)
+│       ├── skip-validation.ts   # VALIDATABLE_EXTENSIONS allow-list + isPythonFile/requiresCodeIndex
+│       ├── validation-flow.ts   # Session/circuit-breaker/outcome logic shared by the TS and Python paths
+│       ├── py-validate.ts       # Python validation orchestrator (mirrors validateEdit for .py)
+│       ├── py-tools.ts          # Deterministic ruff + pydoclint runners
+│       ├── py-doc-check.ts      # Pragmatic Python docstring-completeness convention + novelty marking
+│       ├── adapters/py-adapter.ts # guardian_py `extract` bridge → ExtractedFunction/ExtractedClass
+│       ├── claude-headless.ts   # Execute headless Claude for AI validation (TS + Python prompt builders)
+│       ├── code-index-client.ts # Direct SQLite queries (readonly); buildPatternContext is language-scoped
 │       ├── validation-cache.ts  # 5-minute TTL result cache
 │       └── validation-sessions.ts # Session store for --resume support
-├── config.ts               # Config resolution (git root, paths, auto-detection)
+├── config.ts               # Config resolution (git root, paths, auto-detection, getGuardianHome/pyenv)
+python/
+└── guardian_py/             # Python extraction helper (stdlib `ast`), run from the guardian's managed pyenv venv
+    ├── extract.py            # `python -m guardian_py extract <file>` — module/class/function/method JSON
+    ├── callgraph.py          # `python -m guardian_py callgraph <root>` — Jedi cross-file call edges
+    └── metadata.py           # Parses `Domain:`/`Tags:`/`Layer:` docstring lines
 skills/                      # Slash commands (installed to ~/.claude/skills/)
 templates/                   # guardian.config.json template + CLAUDE.md snippet
 tests/                       # Unit tests (tsx --test)
@@ -109,11 +122,15 @@ The JSDoc lookup (`findJSDocBefore`) still uses a regex to find the nearest `/**
 
 ### Three Index Tiers
 
-- **Tier 1 (JSDoc)**: Functions with `@domain` tag in JSDoc. Full metadata.
-- **Tier 2 (Exports)**: Exported functions discovered by ts-morph, lacking JSDoc. Minimal metadata.
-- **Tier 3 (Docs)**: Markdown files parsed into heading-level sections.
+- **Tier 1 (JSDoc / docstring)**: Functions with `@domain` tag in JSDoc (TS), or a unit whose docstring has its own `Domain:` line (Python). Full metadata.
+- **Tier 2 (Exports)**: Exported functions discovered by ts-morph, lacking JSDoc (TS); or a Python function/method/class/dataclass unit with no `Domain:` line (units are never Tier 3). Minimal metadata.
+- **Tier 3 (Docs)**: Markdown files parsed into heading-level sections; also a Python **module** row whose docstring has no `Domain:` line (a module is never Tier 2).
 
-Tier detection: presence of `@domain` in JSDoc block → Tier 1. Otherwise if exported → Tier 2.
+Tier detection (TS): presence of `@domain` in JSDoc block → Tier 1. Otherwise if exported → Tier 2.
+
+Tier detection (Python): the module row is Tier 1 if its docstring has a `Domain:` line, else Tier 3. Every function/method/class/dataclass unit row is Tier 1 if it has its own `Domain:` line, else Tier 2.
+
+**Python index coverage.** `functions.language` (`'ts' | 'py'`) tags every row. Python module/class/function/method definitions are indexed by `indexPythonFile` (`indexer.ts`, via `py-index.ts`'s `extractPythonFile`) into the *same* `functions` / `function_domains` / `function_tags` / `function_systemlayers` / `function_embeddings` tables TypeScript uses — no parallel schema. A unit without its own `Domain:` line inherits the module's domains for search/embeddings (denormalization) while keeping its own tier. Cross-file Python call edges come from `py-call-graph.ts`'s `buildPythonCallGraph` (Jedi, via `guardian_py callgraph`) into the same `call_edges` table, resolved by `(file, def-line)` first — required because Python method names collide across classes in one file — falling back to name lookup. `Domain:`/`Tags:`/`Layer:` docstring lines are parsed by `guardian_py/metadata.py` and normalized exactly like JSDoc's `@domain`/`@tags`/`@systemlayer` (domains/tags lowercased, layer preserved case) into the identical columns, so hybrid search, callers/callees, and impact analysis work the same way across both languages.
 
 ### Normalization Rules
 
@@ -136,11 +153,24 @@ Two separate caching mechanisms with **different hash semantics** — getting th
 
 40% FTS5 keyword + 60% semantic (cosine similarity on local embeddings). FTS5 ranks normalized via sigmoid. Semantic scores are already 0-1 cosine similarity.
 
+### Python Validation Path
+
+Python (`.py`) is a fully supported second language, not TypeScript-with-a-different-extension — it never touches ts-morph, JSDoc, or the `@domain`/`@what`/`@how` tag convention. Dispatch happens by extension at two independent seams: the hook's `VALIDATABLE_EXTENSIONS` allow-list (`skip-validation.ts`) and the indexer's Python branch (`indexer.ts`).
+
+- **Extraction**: `guardian_py` (`python/guardian_py/`), a stdlib-`ast` helper run from the guardian's managed pyenv venv (`${GUARDIAN_HOME}/pyenv`, provisioned by `scripts/build.sh`, optional and fail-open — a missing `python3`/venv/pip only disables Python validation, it never fails the build). `python -m guardian_py extract <file>` always exits 0 (errors ride in the JSON payload, e.g. `{"error":"syntax"}` on a mid-edit buffer) and emits module/class/function/method units with docstrings, signatures, and parsed `Domain:`/`Tags:`/`Layer:` metadata. `python -m guardian_py callgraph <root>` uses Jedi for cross-file call edges (index builds only).
+- **Deterministic-first, in-hook**: `py-tools.ts` runs `ruff` (lint) and `pydoclint` (docstring↔signature) — both fail-open, timeout-bounded, invoked from the guardian pyenv. `py-doc-check.ts` layers a **pragmatic** doc-completeness check on top (module + class docstrings need a `Domain:` line; public function docstrings just need to exist — `Args:`/`Returns:`/`Raises:` depth is left to pydoclint and the LLM, not locally enforced, to avoid churn on trivial signatures). **`pyright` is a CI/type gate, not run in-hook** — see the amendment in `docs/superpowers/specs/2026-08-15-python-validation-path-design.md`; in-hook latency was the reason.
+- **Pattern context**: the Python index now has coverage (definitions + call edges, per "Python index coverage" above), so `py-validate.ts` pulls the same sibling/similar/caller/doc context TypeScript gets, via `buildPatternContext(filePath, ..., 'py')` — the `'py'` argument language-scopes DRY/sibling lookups so a TS function never surfaces as "similar" to a Python edit. The call is defensive (`.catch(() => EMPTY_PATTERN_CONTEXT)`) so a missing/empty/corrupt Python index can never block an edit. Session/cache/circuit-breaker logic is shared with the TS path via `validation-flow.ts` (`resolveSessionState` / `recordValidationOutcome`) rather than duplicated.
+- **Prompt & bounded agent**: a neutral `PY_SYSTEM_PROMPT` (`claude-headless.ts`) carries no JSDoc/TS assumptions. The headless agent is bounded to the read-only code-index MCP tools (`PY_INDEX_TOOLS` — search/callers/callees/impact/etc.; excludes `execute` and `rebuild_index`) via `--permission-mode dontAsk` + `--disallowedTools` (Bash/Read/Write/Edit/MultiEdit/NotebookEdit/Glob/Grep/WebFetch/WebSearch/Task) — **not** `bypassPermissions`, under which `--allowedTools` is a no-op and read-only Bash would still be auto-allowed. This replaced an earlier design where the agent explored the filesystem ad-hoc for cross-file context, which caused multi-minute timeouts; bounding it to index-only tools plus pre-injected pattern context brought the timeout back to 120s, matching the TS path.
+- **Stance**: Python is dynamically typed and its runtime/API guarantees are weaker than TypeScript's, so the prompt biases **warn-not-deny** on concerns the LLM can't resolve statically (attribute access, decorated/variadic signatures, monkeypatching). It denies only for a clear in-code contradiction: a docstring that plainly lies about the body, visible DRY duplication, or a missing required docstring/`Domain:` line.
+- **Convention**: Google-style docstrings; types live in PEP 604 annotations, never duplicated in prose. `Domain:`/`Tags:`/`Layer:` are comma-separated lines inside module/class docstrings.
+
 ## User-Level File Locations
 
+`getGuardianHome()` resolves the root: `${CLAUDE_PLUGIN_DATA}` under the installed plugin, or `~/.codebase-guardian/` as the dev/fallback. Layout (shown at the fallback root):
+
 ```
-~/.codebase-guardian/
-├── source/                          # Installed source (synced by update.sh)
+~/.codebase-guardian/            # or ${CLAUDE_PLUGIN_DATA} under the plugin
+├── app/                             # Built engine — dist + node_modules + python + pyenv (synced by scripts/build.sh; plugin only)
 ├── indexes/{project-hash}/          # Per-project SQLite databases
 │   ├── code-quality.db
 │   ├── .validation-cache.json       # Result cache

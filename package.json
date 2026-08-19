@@ -1,7 +1,7 @@
 {
   "name": "codebase-guardian",
-  "version": "0.2.0",
-  "description": "Semantic code index + automated validation hooks for TypeScript codebases",
+  "version": "0.5.0",
+  "description": "Semantic code index + automated validation hooks for TypeScript and Python codebases",
   "type": "module",
   "main": "dist/mcp-server/index.js",
   "scripts": {
@@ -12,7 +12,7 @@
     "metrics": "node dist/mcp-server/metrics-report.js",
     "test": "npx tsx --test tests/**/*.test.ts",
     "test:mcp": "npx tsx --test tests/db.test.ts tests/indexer.test.ts",
-    "test:hooks": "npx tsx --test tests/code-analyzer.test.ts tests/jsdoc-parser.test.ts tests/claude-headless.test.ts tests/code-index-client.test.ts"
+    "test:hooks": "npx tsx --test tests/code-analyzer.test.ts tests/jsdoc-parser.test.ts tests/claude-headless.test.ts tests/code-index-client.test.ts tests/skip-validation.test.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",

@@ -360,6 +360,9 @@ Your response must still be ONLY a JSON object — any tool calls happen before 
  * @param {string} params.prompt The validation prompt (full context on first attempt, just edit on retry)
  * @param {boolean} params.isRetry Whether this is a retry (has existing headless session)
  * @param {number} params.timeoutMs Timeout in milliseconds (default 30000)
+ * @param {string} params.systemPrompt First-attempt system prompt (defaults to the TypeScript SYSTEM_PROMPT; the Python path supplies a neutral, Python-appropriate one)
+ * @param {boolean} params.useMcp Whether to wire the code-index MCP server (defaults true; both the TypeScript and Python paths use it now that the index covers Python)
+ * @param {string[]} [params.allowedTools] Restricts the headless agent to exactly these tool names via `--allowedTools` (e.g. the bounded read-only code-index MCP tools for the Python path). Omitted → no restriction, so under `--permission-mode bypassPermissions` all default tools (Read/Bash/Grep/Glob/etc.) remain available — this is the TypeScript path's unchanged behavior.
  * @returns {Promise<ClaudeValidationResponse>} Parsed validation decision
  *
  * @sideeffects Executes Claude CLI subprocess, writes/deletes temp files, reads/writes session store
@@ -373,8 +376,13 @@ export async function executeClaudeHeadless(params: {
   prompt: string;
   isRetry: boolean;
   timeoutMs?: number;
+  systemPrompt?: string;
+  useMcp?: boolean;
+  allowedTools?: string[];
+  permissionMode?: string;
+  disallowedTools?: string[];
 }): Promise<ClaudeValidationResponse> {
-  const { outerSessionId, filePath, prompt, isRetry, timeoutMs = 30000 } = params;
+  const { outerSessionId, filePath, prompt, isRetry, timeoutMs = 30000, systemPrompt = SYSTEM_PROMPT, useMcp = true, allowedTools, permissionMode = 'bypassPermissions', disallowedTools } = params;
   const sessionKey = `${outerSessionId}:${filePath}`;
   const overallStart = Date.now();
 
@@ -386,11 +394,11 @@ export async function executeClaudeHeadless(params: {
 
   if (existingSession) {
     log(`  [HEADLESS] Resuming session ${existingSession.headlessSessionId} (attempt #${existingSession.attemptCount + 1})`);
-    return executeWithResume(existingSession.headlessSessionId, prompt, sessionKey, existingSession.attemptCount, timeoutMs, overallStart);
+    return executeWithResume(existingSession.headlessSessionId, prompt, sessionKey, existingSession.attemptCount, timeoutMs, overallStart, useMcp, allowedTools, permissionMode, disallowedTools);
   }
 
   log(`  [HEADLESS] First attempt for ${sessionKey}`);
-  return executeFirstAttempt(prompt, sessionKey, timeoutMs, overallStart);
+  return executeFirstAttempt(prompt, sessionKey, timeoutMs, overallStart, systemPrompt, useMcp, allowedTools, permissionMode, disallowedTools);
 }
 
 /**
@@ -402,6 +410,9 @@ export async function executeClaudeHeadless(params: {
  * @param {string} sessionKey The session store key ({outerSessionId}:{filePath})
  * @param {number} timeoutMs Timeout in milliseconds
  * @param {number} overallStart Start timestamp for timing logs
+ * @param {string} systemPrompt System prompt passed to the CLI (the TypeScript SYSTEM_PROMPT, or the Python path's neutral one)
+ * @param {boolean} useMcp Whether to wire the code-index MCP server (both TypeScript and Python pass true now that the index covers Python)
+ * @param {string[]} [allowedTools] Restricts the headless agent to exactly these tool names via `--allowedTools`; omitted leaves all default tools available
  * @returns {Promise<ClaudeValidationResponse>} Parsed validation decision
  *
  * @sideeffects Executes Claude CLI subprocess via execFileSync, writes session store
@@ -413,22 +424,33 @@ async function executeFirstAttempt(
   prompt: string,
   sessionKey: string,
   timeoutMs: number,
-  overallStart: number
+  overallStart: number,
+  systemPrompt: string,
+  useMcp: boolean,
+  allowedTools?: string[],
+  permissionMode: string = 'bypassPermissions',
+  disallowedTools?: string[]
 ): Promise<ClaudeValidationResponse> {
   try {
     log(`  [HEADLESS] Starting first attempt with ${timeoutMs}ms timeout...`);
-    const mcpConfig = getMcpConfigPath();
+    const mcpConfig = useMcp ? getMcpConfigPath() : null;
     if (mcpConfig) log(`  [HEADLESS] MCP config available at ${mcpConfig}`);
 
     const cliArgs = [
       '-p', prompt,
-      '--system-prompt', SYSTEM_PROMPT,
+      '--system-prompt', systemPrompt,
       '--output-format', 'json',
-      '--permission-mode', 'bypassPermissions',
+      '--permission-mode', permissionMode,
       '--model', 'opus',
     ];
     if (mcpConfig) {
       cliArgs.push('--mcp-config', mcpConfig);
+    }
+    if (allowedTools && allowedTools.length > 0) {
+      cliArgs.push('--allowedTools', allowedTools.join(','));
+    }
+    if (disallowedTools && disallowedTools.length > 0) {
+      cliArgs.push('--disallowedTools', disallowedTools.join(','));
     }
 
     const t2 = Date.now();
@@ -472,6 +494,8 @@ async function executeFirstAttempt(
  * @param {number} previousAttemptCount Number of previous attempts
  * @param {number} timeoutMs Timeout in milliseconds
  * @param {number} overallStart Start timestamp for timing logs
+ * @param {boolean} useMcp Whether to wire the code-index MCP server (the resumed session inherits its first-attempt system prompt regardless)
+ * @param {string[]} [allowedTools] Restricts the headless agent to exactly these tool names via `--allowedTools`; omitted leaves all default tools available. Passed again on resume so the bounded tool set is enforced for retries too, not just the first attempt.
  * @returns {Promise<ClaudeValidationResponse>} Parsed validation decision
  *
  * @sideeffects Executes Claude CLI subprocess via execFileSync, updates session store
@@ -485,21 +509,31 @@ async function executeWithResume(
   sessionKey: string,
   previousAttemptCount: number,
   timeoutMs: number,
-  overallStart: number
+  overallStart: number,
+  useMcp: boolean,
+  allowedTools?: string[],
+  permissionMode: string = 'bypassPermissions',
+  disallowedTools?: string[]
 ): Promise<ClaudeValidationResponse> {
   try {
     log(`  [HEADLESS] Resuming session ${headlessSessionId} (attempt #${previousAttemptCount + 1})...`);
-    const mcpConfig = getMcpConfigPath();
+    const mcpConfig = useMcp ? getMcpConfigPath() : null;
 
     const cliArgs = [
       '--resume', headlessSessionId,
       '-p', prompt,
       '--output-format', 'json',
-      '--permission-mode', 'bypassPermissions',
+      '--permission-mode', permissionMode,
       '--model', 'opus',
     ];
     if (mcpConfig) {
       cliArgs.push('--mcp-config', mcpConfig);
+    }
+    if (allowedTools && allowedTools.length > 0) {
+      cliArgs.push('--allowedTools', allowedTools.join(','));
+    }
+    if (disallowedTools && disallowedTools.length > 0) {
+      cliArgs.push('--disallowedTools', disallowedTools.join(','));
     }
 
     const t2 = Date.now();
@@ -675,6 +709,128 @@ function formatIndexedFunction(func: FunctionResult): string {
 }
 
 /**
+ * @what Renders every PatternContext field into its formatted prompt-section text, shared by both the TypeScript and Python first-attempt prompt builders
+ * @how Reuses formatIndexedFunction for each function-shaped row (siblings, similar, callers) and formats relevant docs, similar comments, README, and aggregated directory patterns into individual section strings. This is a straight extraction of buildFirstAttemptPrompt's original inline section-building code — the exact per-field formatting rules (placeholder text when empty, truncation, joins) are UNCHANGED so buildFirstAttemptPrompt's output stays byte-identical to before this helper existed
+ * @why buildPythonFirstAttemptPrompt now also needs to render sibling/similar/caller/doc/comment context (P3.5), and duplicating this formatting logic between the TS and Python builders would let the two silently diverge over time — factoring it into one shared helper in the same module means both builders always render PatternContext identically
+ *
+ * @param {PatternContext} patternContext Aggregated code index context for the edit
+ * @returns {object} One formatted string per PatternContext section, ready to interpolate into either prompt builder's template
+ *
+ * @sideeffects None
+ * @systemlayer Utility
+ * @domain prompt-formatting, context-assembly, code-quality
+ * @tags formatting, prompt-helper, pattern-context, shared, dry
+ */
+export function formatPatternContextSections(patternContext: PatternContext): {
+  relevantDocsSection: string;
+  similarSection: string;
+  similarCommentsSection: string;
+  readmeSection: string;
+  siblingSection: string;
+  knownCalledSection: string;
+  unknownCalledSection: string;
+  callersSection: string;
+  patternsSection: string;
+} {
+  // ── Relevant project documentation ──
+  let relevantDocsSection = '';
+  if (patternContext.relevantDocs.length > 0) {
+    relevantDocsSection = patternContext.relevantDocs
+      .map(doc => {
+        let entry = `- **${doc.name}** (${doc.filePath})\n  Matched: domains=[${doc.matchedDomains.join(',')}] tags=[${doc.matchedTags.join(',')}]\n  ${doc.descriptionPreview}`;
+        if (doc.sections && doc.sections.length > 0) {
+          for (const section of doc.sections) {
+            entry += `\n  ### ${section.heading}\n  ${section.body}`;
+          }
+        }
+        return entry;
+      })
+      .join('\n\n');
+  }
+
+  // ── Similar existing functions (DRY enforcement) ──
+  let similarSection: string;
+  if (patternContext.similarExistingFunctions.size > 0) {
+    const entries: string[] = [];
+    for (const [funcName, similarFuncs] of patternContext.similarExistingFunctions) {
+      entries.push(`Similar functions found for "${funcName}":`);
+      for (const f of similarFuncs) {
+        entries.push(`  - ${formatIndexedFunction(f)}`);
+      }
+    }
+    similarSection = entries.join('\n');
+  } else {
+    similarSection = '(no similar functions found in the code index — likely genuinely new capability)';
+  }
+
+  // ── Similar inline comments (step-level DRY) ──
+  let similarCommentsSection = '';
+  if (patternContext.similarComments.length > 0) {
+    const entries: string[] = [];
+    for (const cm of patternContext.similarComments) {
+      entries.push(`Edit comment: "${cm.editComment}"`);
+      for (const m of cm.matches) {
+        entries.push(`  Similar in: ${m.functionName} (${m.filePath})`);
+        entries.push(`    Comment: "${m.commentText}"`);
+      }
+    }
+    similarCommentsSection = entries.join('\n');
+  }
+
+  // ── Directory README ──
+  const readmeSection = patternContext.directoryReadme
+    ? patternContext.directoryReadme
+    : '(No README found for this directory — skip README compliance check)';
+
+  // ── Sibling functions ──
+  const siblingSection = patternContext.siblingFunctions.length > 0
+    ? patternContext.siblingFunctions.slice(0, 20).map(f => `- ${formatIndexedFunction(f)}`).join('\n')
+    : '(no sibling functions found in directory)';
+
+  // ── Called functions from index ──
+  const knownCalledSection = patternContext.calledFunctionDetails.size > 0
+    ? Array.from(patternContext.calledFunctionDetails.values())
+        .map(f => `- ${formatIndexedFunction(f)}`)
+        .join('\n')
+    : '(none resolved from code index)';
+
+  const unknownCalledSection = patternContext.unknownCalledFunctions.length > 0
+    ? patternContext.unknownCalledFunctions.join(', ')
+    : '(all called functions resolved)';
+
+  // ── Callers (blast radius) ──
+  const callersSection = patternContext.callerDetails.size > 0
+    ? Array.from(patternContext.callerDetails.entries())
+        .map(([funcName, callers]) =>
+          `- ${funcName} is called by: ${callers.map(c => `${c.name} (${c.file_path})`).join(', ')}`
+        )
+        .join('\n')
+    : '(no callers found for modified functions)';
+
+  // ── Directory patterns ──
+  const patterns = patternContext.directoryPatterns;
+  const patternsSection = [
+    `Common domains: ${patterns.commonDomains.join(', ') || '(none)'}`,
+    `Common system layers: ${patterns.commonSystemLayers.join(', ') || '(none)'}`,
+    `Common tags: ${patterns.commonTags.join(', ') || '(none)'}`,
+    `Side effects in directory: ${patterns.hasSideEffects ? 'Yes (some functions have side effects)' : 'No (pure functions directory)'}`,
+    `Naming examples: ${patterns.namingExamples.join(', ') || '(none)'}`,
+  ].join('\n');
+
+  return {
+    relevantDocsSection,
+    similarSection,
+    similarCommentsSection,
+    readmeSection,
+    siblingSection,
+    knownCalledSection,
+    unknownCalledSection,
+    callersSection,
+    patternsSection,
+  };
+}
+
+/**
  * @what Builds the full first-attempt validation prompt with all code index context
  * @how Assembles extracted functions, code index context (README, siblings, similar functions, callers, patterns), and JSDoc issues
  * @why First attempt needs complete context — system prompt has the rules, this prompt has the data
@@ -758,95 +914,25 @@ ${type.fullCode}
       .join('\n\n---\n\n');
   }
 
-  // ── Relevant project documentation ──
-  let relevantDocsSection = '';
-  if (patternContext.relevantDocs.length > 0) {
-    relevantDocsSection = patternContext.relevantDocs
-      .map(doc => {
-        let entry = `- **${doc.name}** (${doc.filePath})\n  Matched: domains=[${doc.matchedDomains.join(',')}] tags=[${doc.matchedTags.join(',')}]\n  ${doc.descriptionPreview}`;
-        if (doc.sections && doc.sections.length > 0) {
-          for (const section of doc.sections) {
-            entry += `\n  ### ${section.heading}\n  ${section.body}`;
-          }
-        }
-        return entry;
-      })
-      .join('\n\n');
-  }
+  // ── Pattern context sections (README, siblings, similar, called, callers, docs, comments, patterns) ──
+  // Shared with buildPythonFirstAttemptPrompt via formatPatternContextSections — see that
+  // function's JSDoc for why this is factored out rather than duplicated.
+  const {
+    relevantDocsSection,
+    similarSection,
+    similarCommentsSection,
+    readmeSection,
+    siblingSection,
+    knownCalledSection,
+    unknownCalledSection,
+    callersSection,
+    patternsSection,
+  } = formatPatternContextSections(patternContext);
 
   // ── Deleted functions (excluded from DRY analysis) ──
   const deletedSection = context.deletedFunctions && context.deletedFunctions.length > 0
     ? `\n== FUNCTIONS BEING DELETED BY THIS EDIT ==\n\nThe following functions are being REMOVED from the file by this edit. Do NOT flag JSDoc issues, DRY violations, or any other problems with these functions — they will no longer exist after the edit lands:\n${context.deletedFunctions.map(name => `- ${name}`).join('\n')}\n\nIf a "similar existing function" from the code index matches one of these deleted function names, IGNORE it for DRY analysis — it is stale index data that will be cleaned up on the next index rebuild.\n`
     : '';
-
-  // ── Similar existing functions (DRY enforcement) ──
-  let similarSection: string;
-  if (patternContext.similarExistingFunctions.size > 0) {
-    const entries: string[] = [];
-    for (const [funcName, similarFuncs] of patternContext.similarExistingFunctions) {
-      entries.push(`Similar functions found for "${funcName}":`);
-      for (const f of similarFuncs) {
-        entries.push(`  - ${formatIndexedFunction(f)}`);
-      }
-    }
-    similarSection = entries.join('\n');
-  } else {
-    similarSection = '(no similar functions found in the code index — likely genuinely new capability)';
-  }
-
-  // ── Similar inline comments (step-level DRY) ──
-  let similarCommentsSection = '';
-  if (patternContext.similarComments.length > 0) {
-    const entries: string[] = [];
-    for (const cm of patternContext.similarComments) {
-      entries.push(`Edit comment: "${cm.editComment}"`);
-      for (const m of cm.matches) {
-        entries.push(`  Similar in: ${m.functionName} (${m.filePath})`);
-        entries.push(`    Comment: "${m.commentText}"`);
-      }
-    }
-    similarCommentsSection = entries.join('\n');
-  }
-
-  // ── Directory README ──
-  const readmeSection = patternContext.directoryReadme
-    ? patternContext.directoryReadme
-    : '(No README found for this directory — skip README compliance check)';
-
-  // ── Sibling functions ──
-  const siblingSection = patternContext.siblingFunctions.length > 0
-    ? patternContext.siblingFunctions.slice(0, 20).map(f => `- ${formatIndexedFunction(f)}`).join('\n')
-    : '(no sibling functions found in directory)';
-
-  // ── Called functions from index ──
-  const knownCalledSection = patternContext.calledFunctionDetails.size > 0
-    ? Array.from(patternContext.calledFunctionDetails.values())
-        .map(f => `- ${formatIndexedFunction(f)}`)
-        .join('\n')
-    : '(none resolved from code index)';
-
-  const unknownCalledSection = patternContext.unknownCalledFunctions.length > 0
-    ? patternContext.unknownCalledFunctions.join(', ')
-    : '(all called functions resolved)';
-
-  // ── Callers (blast radius) ──
-  const callersSection = patternContext.callerDetails.size > 0
-    ? Array.from(patternContext.callerDetails.entries())
-        .map(([funcName, callers]) =>
-          `- ${funcName} is called by: ${callers.map(c => `${c.name} (${c.file_path})`).join(', ')}`
-        )
-        .join('\n')
-    : '(no callers found for modified functions)';
-
-  // ── Directory patterns ──
-  const patterns = patternContext.directoryPatterns;
-  const patternsSection = [
-    `Common domains: ${patterns.commonDomains.join(', ') || '(none)'}`,
-    `Common system layers: ${patterns.commonSystemLayers.join(', ') || '(none)'}`,
-    `Common tags: ${patterns.commonTags.join(', ') || '(none)'}`,
-    `Side effects in directory: ${patterns.hasSideEffects ? 'Yes (some functions have side effects)' : 'No (pure functions directory)'}`,
-    `Naming examples: ${patterns.namingExamples.join(', ') || '(none)'}`,
-  ].join('\n');
 
   // ── Property accesses ──
   const propertiesSection = propertyAccesses.length > 0
@@ -1003,3 +1089,4 @@ ${functionsSection}
 ${typesSection ? `\n== UPDATED TYPES/INTERFACES ==\n\n${typesSection}\n` : ''}${editScope ? `\n== WHAT THIS EDIT ACTUALLY CHANGED (judge ONLY this — see "Change Scope" in your instructions) ==\n\n${editScope}\n` : ''}
 Re-validate and return the JSON result. Be explicit about which previous violations were addressed and which remain.`;
 }
+

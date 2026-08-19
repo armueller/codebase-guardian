@@ -1,0 +1,16 @@
+# Full `pip freeze` of the guardian pyenv (~/.codebase-guardian/pyenv) — every
+# transitive dependency pinned for reproducibility. Regenerate by re-freezing
+# a real install (`~/.codebase-guardian/pyenv/bin/pip freeze`); do not hand-edit.
+click==8.4.2
+colorama==0.4.6
+docstring_parser_fork==0.0.16
+griffe==2.1.0
+griffecli==2.1.0
+griffelib==2.1.0
+jedi==0.20.0
+nodeenv==1.10.0
+parso==0.8.7
+pydoclint==0.9.1
+pyright==1.1.411
+ruff==0.16.3
+typing_extensions==4.16.0

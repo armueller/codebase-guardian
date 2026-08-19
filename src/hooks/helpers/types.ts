@@ -16,6 +16,8 @@
  */
 export interface ExtractedFunction {
   name: string;
+  parent?: string | null;  // Enclosing class for a method (Python), else null/undefined. Used to
+                           // disambiguate same-named methods across classes in one file.
   fullCode: string;        // JSDoc comment + function body (if JSDoc exists)
   hasJSDoc: boolean;       // Whether JSDoc was found above function
   isNew: boolean;          // Function is being created in this edit (not in old_string)
@@ -178,4 +180,23 @@ export interface TypeUsageAnalysis {
 export interface DeclaredType {
   name: string;
   kind: 'interface' | 'type' | 'enum';
+}
+
+/**
+ * @what Represents a Python class, dataclass, or module extracted from source with its metadata
+ * @how Contains fields, parent class, docstring, and domain/tag/layer metadata parsed from the guardian_py helper's extraction JSON
+ * @why Used by py-adapter to return structured extraction results for Python classes alongside functions
+ */
+export interface ExtractedClass {
+  name: string;
+  kind: 'class' | 'dataclass' | 'module';
+  fields: { name: string; annotation: string | null; default: string | null; comment: string | null }[];
+  parent: string | null;
+  docstring: string | null;
+  domains: string[];
+  tags: string[];
+  layer: string | null;
+  isNew: boolean;
+  isModified: boolean;
+  lineInFile: number;
 }

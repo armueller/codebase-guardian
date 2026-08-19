@@ -9,6 +9,7 @@ import path from 'path';
 import { openDatabase, clearAllData } from './db.js';
 import { buildIndex, clearDirtyFiles } from './indexer.js';
 import { buildCallGraph } from './call-graph.js';
+import { buildPythonCallGraph } from './py-call-graph.js';
 import { invalidateCache } from './embeddings.js';
 import { clearValidationArtifacts } from './validation-artifacts.js';
 import { resolveConfig, ensureDirectories, registerProject } from '../config.js';
@@ -55,6 +56,15 @@ async function main(): Promise<void> {
   console.log(`  Tier 2 (exports): ${graphStats.exportsDiscovered}`);
   console.log(`  Call edges: ${graphStats.edgesCreated}`);
   console.log(`  Time: ${((Date.now() - graphStart) / 1000).toFixed(1)}s`);
+  console.log('');
+
+  // Phase 2b: Build Python call graph (cross-file edges resolved against P3.3's functions rows)
+  console.log('Phase 2b: Building Python call graph...');
+  const pyGraphStart = Date.now();
+  const pyGraphStats = await buildPythonCallGraph(db, REPO_ROOT);
+
+  console.log(`  Python call edges: ${pyGraphStats.edgesCreated}`);
+  console.log(`  Time: ${((Date.now() - pyGraphStart) / 1000).toFixed(1)}s`);
   console.log('');
 
   // Clear dirty files

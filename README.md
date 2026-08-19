@@ -199,6 +199,7 @@ your-project/
 | `/audit` | Scan the codebase for JSDoc coverage — reports coverage %, per-directory breakdown, top gaps. Offers to generate JSDoc stubs. |
 | `/hook-audit` | Analyze validation hook performance — allow/deny/error rates, timing distributions, false positive detection. |
 | `/review-suggestions` | Review and apply accumulated non-blocking suggestions from `.guardian/suggestions.md`. |
+| `/pr-audit <PR#>` | Comprehensive pre-merge PR audit — Guardian-driven duplicate/impact/doc/pattern analysis plus your project's own checklists, run by a fresh subagent and posted as a marker comment. Tailor it per project — see [PR Audit Setup](#pr-audit-setup). |
 
 ## Validation Hook
 
@@ -347,7 +348,7 @@ Create `guardian.config.json` at your project root to override auto-detection:
   "sourceDirectories": ["src", "lib"],
   "docsDirectories": ["docs"],
   "excludeDirectories": ["node_modules", "dist", "build", ".next", "coverage"],
-  "fileExtensions": [".ts", ".tsx"],
+  "fileExtensions": [".ts", ".tsx", ".py"],
   "jsdoc": {
     "requiredTags": ["what", "how", "why", "sideeffects", "systemlayer", "domain", "tags"],
     "minTags": 3,
@@ -362,6 +363,49 @@ All fields are optional. Without a config file, Guardian auto-detects:
 - **Docs directories** by checking for `docs/`, `doc/`, `documentation/`
 - **Project root** via `git rev-parse --show-toplevel`
 - **Project name** from `package.json`
+
+> **Mixed TypeScript + Python repos:** source-directory auto-detection is driven by `tsconfig.json`, so Python packages living **outside** the TypeScript roots (e.g. an `ml/` directory) are not scanned automatically. Add them explicitly: `"sourceDirectories": ["app", "ml"]`. `.py` is enabled by default in `fileExtensions`; `.venv/`, `__pycache__/`, and Python test files are excluded/skipped for you.
+
+### PR Audit Setup
+
+The `/pr-audit` skill runs a comprehensive, language-agnostic pre-merge audit of a PR — duplicate detection, blast-radius/impact analysis, documentation alignment, pattern compliance, and staff-level synthesis, all driven by the Guardian index — and dispatches a **fresh subagent** to do it (no implementation memory to short-circuit the checks). It works out of the box with defaults; two optional **committed** files under `.guardian/` tailor it to your project.
+
+**`.guardian/pr-audit.config.json`** — structured knobs the audit reads:
+
+```json
+{
+  "version": 1,
+  "baseline": { "typecheck": "npx tsc --noEmit", "lint": null, "test": "npm test" },
+  "docDirs": ["docs"],
+  "staffReview": { "minDiffLinesForFullPass": 100 },
+  "impact": { "depth": 2 },
+  "suggestionStaging": { "filePath": ".guardian/suggestions.md", "clearAfterAudit": true },
+  "marker": { "commentMarker": "<!-- pr-audit:v1 -->", "ciCheckJob": null },
+  "deferredBugProtocol": { "requireGitHubIssue": true, "repo": "owner/repo" },
+  "plan": { "vaultDir": "~/path/to/implementation/plans" },
+  "checklistsFile": ".guardian/pr-audit.checklists.md"
+}
+```
+
+- **`baseline`** — commands the audit runs to *empirically* verify the PR (it never trusts the PR description's claims about type-check/lint/tests). Set any to `null` to skip it.
+- **`docDirs`** — where your architecture/pattern/best-practice docs live (used for documentation-alignment checks against changed code).
+- **`marker.ciCheckJob`** — name of an optional CI job that enforces the marker comment's presence; leave `null` if you don't have one. The comment is always posted regardless.
+- **`deferredBugProtocol.repo`** — GitHub repo for deferred-bug tracking issues.
+- **`plan.vaultDir`** — where implementation plans live (for plan-vs-code cross-reference); omit to skip that phase.
+
+All fields are optional — omit the file entirely to run with defaults.
+
+**`.guardian/pr-audit.checklists.md`** — free-form prose domain checks the audit runs against your diff (project invariants, business rules, per-area checklists). Each item states the severity to assign on failure; findings still require concrete evidence. See this repo's own [`.guardian/pr-audit.checklists.md`](.guardian/pr-audit.checklists.md) for a worked example — it encodes Guardian's own fail-open / hook-output / boundary invariants as auditable items.
+
+**Commit both files.** Guardian ignores runtime output under `.guardian/` but whitelists these two — mirror this in your `.gitignore`:
+
+```gitignore
+.guardian/*
+!.guardian/pr-audit.config.json
+!.guardian/pr-audit.checklists.md
+```
+
+**Run it:** `/pr-audit <PR#>` (or `/pr-audit` for the current branch's PR). The skill rebuilds the index if indexed files changed, dispatches the audit subagent through all phases, and posts (and later updates) a marker comment on the PR. It is language-agnostic — the same skill audits TypeScript and Python PRs, reasoning about documentation via Guardian's normalized metadata rather than language-specific tags.
 
 ### Environment Variables
 

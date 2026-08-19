@@ -28,8 +28,16 @@ import { semanticSearch, invalidateCache } from './embeddings.js';
 import { clearValidationArtifacts } from './validation-artifacts.js';
 import { buildIndex, readDirtyFiles, clearDirtyFiles } from './indexer.js';
 import { buildCallGraph } from './call-graph.js';
+import { buildPythonCallGraph } from './py-call-graph.js';
 import { createIndexAPI } from '../shared/index-api.js';
 import { executeInSandbox } from './execute-sandbox.js';
+import { createRequire } from 'module';
+
+// Single source of truth for the server version — read from package.json so it
+// can never drift from the published plugin/package version (it did: was pinned
+// at 0.3.0 through several releases).
+const _require = createRequire(import.meta.url);
+const PKG_VERSION: string = _require('../../package.json').version ?? '0.0.0';
 
 // ─── Path Resolution ────────────────────────────────────────────────────────
 
@@ -343,7 +351,7 @@ function formatFunctionResult(func: FunctionResult, score?: number): string {
 // ─── MCP Server ─────────────────────────────────────────────────────────────
 
 const server = new Server(
-  { name: 'codebase-guardian', version: '0.3.0' },
+  { name: 'codebase-guardian', version: PKG_VERSION },
   { capabilities: { tools: {} } }
 );
 
@@ -444,6 +452,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const indexStats = await buildIndex(db, REPO_ROOT);
         console.error('Building call graph...');
         const graphStats = await buildCallGraph(db, REPO_ROOT);
+        console.error('Building Python call graph...');
+        const pyGraphStats = await buildPythonCallGraph(db, REPO_ROOT);
         invalidateCache();
 
         // Bust the hook's validation cache + session store so stale verdicts
@@ -464,6 +474,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               `**Tier 3 (docs):** ${indexStats.tier3Added}`,
               `**Embeddings generated:** ${indexStats.embeddingsGenerated}`,
               `**Call edges:** ${graphStats.edgesCreated}`,
+              `**Python call edges:** ${pyGraphStats.edgesCreated}`,
               `**Inline comments:** ${indexStats.commentsExtracted}`,
               `**Doc sections:** ${indexStats.docSectionsCreated}`,
               `**Validation cache:** ${clearedArtifacts.length > 0 ? `cleared (${clearedArtifacts.join(', ')})` : 'already clear'}`,

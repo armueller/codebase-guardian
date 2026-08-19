@@ -43,6 +43,8 @@ import {
 } from './helpers/validation-cache.js';
 import { getSession, setDenialInfo, clearSession as clearSessionEntry } from './helpers/validation-sessions.js';
 import { shouldStandDown } from './helpers/circuit-breaker.js';
+import { shouldSkipValidation, isPythonFile, requiresCodeIndex } from './helpers/skip-validation.js';
+import { validatePythonEdit } from './helpers/py-validate.js';
 import crypto from 'crypto';
 import { resolveConfig, ensureDirectories, hashProjectRoot } from '../config.js';
 
@@ -62,15 +64,15 @@ const metricCtx: {
 
 /**
  * @what Main entry point for the pre-edit validation hook
- * @how Reads stdin, resolves the edited file's project, validates the edit against the code index and headless Claude, and returns an allow/deny decision (recorded to the metrics store on exit)
+ * @how Parses the stdin HookInput, filters to Edit/Write, resolves the edited file's project (for per-project metrics), sets project context, applies the skip-list, gates on TS code-index availability (Python bypasses this gate), runs validateEdit (which dispatches TypeScript vs Python), emits the allow/deny decision (recorded to the metrics store on exit), and fails open on any error
  * @why Claude Code executes this hook before Edit/Write operations to enforce code quality
  *
- * @returns {Promise<void>} Resolves once the decision has been emitted; the process then exits naturally
+ * @returns {Promise<void>} Resolves once the allow/deny decision has been written to stdout and process.exitCode set
  *
- * @sideeffects Reads stdin; reads the edited file's project config; mutates the module-scoped metrics context; writes debug logs; emits the decision and sets process.exitCode
+ * @sideeffects Reads stdin, resolves the edited file's project config, sets project context, mutates the module-scoped metrics context, executes validation (may spawn headless Claude), writes to the validation debug log, writes the decision JSON to stdout, sets process.exitCode (never calls process.exit, per the Exit Discipline invariant)
  * @systemlayer Hook Entry
- * @domain hook-execution, validation-orchestration, metrics
- * @tags hook-main, entry-point, validation-flow, orchestration, metrics
+ * @domain hook-execution, validation-orchestration, fail-open, metrics
+ * @tags hook-main, entry-point, validation-flow, fail-open, python-bypass, metrics
  */
 async function main() {
   try {
@@ -120,8 +122,11 @@ async function main() {
       return allowAndExit(`Skipping validation for ${filePath}`);
     }
 
-    // Check if code index is available — fail open if not
-    if (!isIndexAvailable()) {
+    // Check if code index is available — fail open if not.
+    // Python files bypass this gate: validatePythonEdit is self-contained and needs
+    // no TS code index, so an absent index must not skip Python validation entirely
+    // (a Python-only project would otherwise never be validated).
+    if (requiresCodeIndex(filePath) && !isIndexAvailable()) {
       log('Code index database not available — allowing edit (fail-open)');
       return allowAndExit('Code index unavailable (fail-open)');
     }
@@ -153,17 +158,25 @@ async function main() {
 }
 
 /**
- * @what Validates an edit operation against the code index and headless Claude
- * @how Extracts functions, runs local JSDoc checks, checks cache, gathers code index context, executes headless Claude with session resume
- * @why Main validation logic — coordinates extraction, local checks, code index queries, and AI validation
+ * @what Validates an edit operation against the code index and headless Claude, or (for Python files)
+ *   delegates to the dedicated Python validation path
+ * @how Constructs post-edit file content, then dispatches `.py` files to validatePythonEdit
+ *   (its own guardian_py extraction + docstring-based flow, pulling pre-injected code-index pattern
+ *   context via buildPatternContext(..., 'py') now that the index has Python coverage). For
+ *   TypeScript files, continues: extracts functions, runs local JSDoc checks, checks cache, gathers
+ *   code index context, executes headless Claude with session resume
+ * @why Main validation logic — coordinates extraction, local checks, code index queries, and AI
+ *   validation for TypeScript; routes Python edits to a language-appropriate path instead of the
+ *   ts-morph pipeline, which cannot parse Python
  *
  * @param {HookInput} input Edit operation to validate
  * @returns {Promise<HookResponse>} Validation decision (allow/deny with violations)
  *
- * @sideeffects Executes headless Claude, reads code index DB, reads/writes cache and session store, logs
+ * @sideeffects Executes headless Claude, reads code index DB (TypeScript path) or spawns Python
+ *   subprocesses (Python path), reads/writes cache and session store, logs
  * @systemlayer Validation Logic
- * @domain validation-orchestration, code-quality-workflow
- * @tags validation-flow, function-extraction, code-index, ai-validation, session-resume
+ * @domain validation-orchestration, code-quality-workflow, python-support
+ * @tags validation-flow, function-extraction, code-index, ai-validation, session-resume, python-dispatch
  */
 async function validateEdit(input: HookInput): Promise<HookResponse> {
   const startTime = Date.now();
@@ -195,6 +208,17 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
     fullFileContent = newString;
   }
   log(`[TIMING] Read file: ${Date.now() - t1}ms (${fullFileContent.length} chars)`);
+
+  // Python edits are dispatched to their own self-contained validation path — see
+  // py-validate.ts. It mirrors this function's cache/session/circuit-breaker/headless
+  // scaffolding but substitutes guardian_py extraction + Python-specific prompts for
+  // the ts-morph pieces below, since Python uses docstrings rather than JSDoc. The
+  // Python index now has coverage too (P3.3 definitions, P3.4 call edges) — py-validate.ts
+  // pulls pre-injected sibling/similar/caller/doc pattern context from it, language-scoped
+  // to 'py' via buildPatternContext.
+  if (isPythonFile(filePath)) {
+    return await validatePythonEdit(input, fullFileContent, currentFileOnDisk, startTime);
+  }
 
   // ── Step 1b: Check for syntax errors in post-edit file ──
   // Track syntax errors but don't bail out — validation should still run on whatever
@@ -557,37 +581,6 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
     clearCacheForFile(filePath);
     return { action: 'allow', message: `Validation error (allowing edit): ${errorMsg}` };
   }
-}
-
-/**
- * @what Determines if a file should skip validation
- * @how Checks file path against patterns for docs, configs, tests, hooks, etc.
- * @why Some files don't need code quality validation (documentation, config, tests, infrastructure)
- *
- * @param {string} filePath Absolute path to file
- * @returns {boolean} True if validation should be skipped
- *
- * @sideeffects None
- * @systemlayer Filtering
- * @domain file-filtering, validation-exemption
- * @tags filtering, exemptions, skip-patterns, performance-optimization, smart-filtering
- */
-function shouldSkipValidation(filePath: string): boolean {
-  const skipPatterns = [
-    /\.md$/,                    // Markdown files
-    /\.txt$/,                   // Text files
-    /\.json$/,                  // JSON files
-    /\.gitignore$/,             // Git ignore
-    /CLAUDE\.local/,            // Local Claude config
-    /\.env/,                    // Environment files
-    /package\.json$/,           // Package manifest
-    /tsconfig\.json$/,          // TypeScript config
-    // Test/spec files are validated with relaxed rules (no JSDoc requirements)
-    // but still checked for runtime correctness, pattern consistency, and API validity
-    /\.claude\/hooks\//         // Hook files (validation infrastructure)
-  ];
-
-  return skipPatterns.some(pattern => pattern.test(filePath));
 }
 
 /**
