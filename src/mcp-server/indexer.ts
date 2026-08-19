@@ -1091,6 +1091,29 @@ export async function buildIndex(
   setMetadata(db, 'last_rebuilt', new Date().toISOString());
   setMetadata(db, 'files_scanned', String(stats.filesScanned));
 
+  // RISK-2: source-dir auto-detection is tsconfig-driven, so a Python package
+  // outside the TypeScript roots is silently never walked (Tier B indexes zero
+  // Python). On a full rebuild, if Python is enabled but nothing Python got
+  // indexed while the repo clearly contains .py files, warn loudly with the fix.
+  // Best-effort — never fail the build over a diagnostic.
+  if (!options.incremental) {
+    try {
+      const cfg = resolveConfig(repoRoot);
+      if (cfg.fileExtensions.includes('.py')) {
+        const pyCount = (db.prepare("SELECT COUNT(*) AS c FROM functions WHERE language = 'py'").get() as { c: number }).c;
+        if (pyCount === 0 && walkDirectory(repoRoot, ['.py']).length > 0) {
+          console.error(
+            `[guardian] WARNING: found Python files under ${repoRoot} but indexed 0 — they are outside ` +
+            `the configured sourceDirectories (${cfg.sourceDirectories.join(', ')}). Add your Python ` +
+            `package dir(s) to "sourceDirectories" in guardian.config.json so Python is indexed and validated.`
+          );
+        }
+      }
+    } catch {
+      // diagnostic only — ignore
+    }
+  }
+
   return stats;
 }
 
