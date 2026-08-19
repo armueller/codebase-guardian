@@ -146,20 +146,21 @@ Non-blocking suggestions accumulate in your project at `.guardian/suggestions.md
 
 ### User-Level (shared across all projects)
 
+Guardian stores its data in the plugin's persistent data dir, `${CLAUDE_PLUGIN_DATA}` — on disk, `~/.claude/plugins/data/codebase-guardian-codebase-guardian/`:
+
 ```
-~/.codebase-guardian/
-├── source/                          # Installed source code + node_modules + dist
+~/.claude/plugins/data/codebase-guardian-codebase-guardian/
+├── app/                             # Built engine (dist/ + node_modules), rebuilt by the SessionStart bootstrap
 ├── indexes/{project-hash}/          # Per-project SQLite databases
 │   └── code-quality.db             #   FTS5 + vector embeddings + call graph
 ├── logs/{project-hash}/             # Per-project validation logs
 │   └── validation-debug.log        #   Every hook invocation with timing
-├── projects.json                    # Maps project hashes to names/paths
-└── .version                         # Installed version
-
-~/.claude/settings.json              # PreToolUse hook registration
-~/.claude.json                       # MCP server registration
-~/.claude/skills/                    # Installed skills (audit, hook-audit, review-suggestions)
+├── metrics.db                       # Durable cross-project decision metrics
+├── .build-stamp                     # Marks a successful engine build
+└── projects.json                    # Maps project hashes to names/paths
 ```
+
+The plugin's own files (manifest, `hooks/`, `skills/`, `scripts/`) install read-only under `~/.claude/plugins/cache/{marketplace}/codebase-guardian/{version}/`. Hooks and the MCP server are registered by the plugin itself (`hooks/hooks.json`, `.mcp.json`) — not in `~/.claude/settings.json` or `~/.claude.json`.
 
 ### Per-Project (in your repo)
 
@@ -419,7 +420,7 @@ All fields are optional — omit the file entirely to run with defaults.
 Guardian automatically detects which project you're working in and uses a separate database for each. Project detection uses the git root of the file being edited, so it handles submodules and monorepos correctly.
 
 ```
-~/.codebase-guardian/
+~/.claude/plugins/data/codebase-guardian-codebase-guardian/
 ├── indexes/
 │   ├── a3f2b1c8d9e0/code-quality.db    # Project A
 │   └── f7c4e2a1b3d5/code-quality.db    # Project B

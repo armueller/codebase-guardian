@@ -166,29 +166,30 @@ Python (`.py`) is a fully supported second language, not TypeScript-with-a-diffe
 
 ## User-Level File Locations
 
-`getGuardianHome()` resolves the root: `${CLAUDE_PLUGIN_DATA}` under the installed plugin, or `~/.codebase-guardian/` as the dev/fallback. Layout (shown at the fallback root):
+Guardian's runtime data lives in the plugin's persistent data dir, `${CLAUDE_PLUGIN_DATA}` — what `getGuardianHome()` resolves to under the installed plugin — which on disk is `~/.claude/plugins/data/codebase-guardian-codebase-guardian/`:
 
 ```
-~/.codebase-guardian/            # or ${CLAUDE_PLUGIN_DATA} under the plugin
-├── app/                             # Built engine — dist + node_modules + python + pyenv (synced by scripts/build.sh; plugin only)
+~/.claude/plugins/data/codebase-guardian-codebase-guardian/
+├── app/                             # Built engine — dist + node_modules + python + pyenv, rebuilt by the SessionStart bootstrap (scripts/build.sh)
 ├── indexes/{project-hash}/          # Per-project SQLite databases
 │   ├── code-quality.db
 │   ├── .validation-cache.json       # Result cache
 │   └── .validation-sessions.json    # Session store
 ├── logs/{project-hash}/
 │   └── validation-debug.log         # Every hook invocation with timing
+├── metrics.db                       # Durable cross-project decision metrics
+├── .build-stamp                     # Marks a successful engine build (delete to force a rebuild)
 └── projects.json                    # Hash → name/path manifest
-
-~/.claude/settings.json              # Hook registration
-~/.claude/skills/                    # Installed skills
 ```
+
+The plugin's own files (manifest, `hooks/`, `skills/`, `scripts/`) are installed read-only under `~/.claude/plugins/cache/{marketplace}/codebase-guardian/{version}/` (i.e. `${CLAUDE_PLUGIN_ROOT}`). `GUARDIAN_HOME` overrides the data dir; without the plugin it falls back to `~/.codebase-guardian/`.
 
 ## Debugging Validation Logs
 
-Per-project validation logs are at `~/.codebase-guardian/logs/{project-hash}/validation-debug.log`. To find which hash corresponds to which project:
+Per-project validation logs are at `~/.claude/plugins/data/codebase-guardian-codebase-guardian/logs/{project-hash}/validation-debug.log`. To find which hash corresponds to which project:
 
 ```bash
-cat ~/.codebase-guardian/projects.json
+cat ~/.claude/plugins/data/codebase-guardian-codebase-guardian/projects.json
 ```
 
 ### Log Format
@@ -221,10 +222,11 @@ After deploying bug fixes to validation logic, cached denials from before the fi
 
 ```bash
 # Find the project hash
-cat ~/.codebase-guardian/projects.json
+cat ~/.claude/plugins/data/codebase-guardian-codebase-guardian/projects.json
 
 # Clear cache and sessions for a specific project
-rm ~/.codebase-guardian/indexes/{project-hash}/.validation-cache.json ~/.codebase-guardian/indexes/{project-hash}/.validation-sessions.json
+GUARDIAN_DATA=~/.claude/plugins/data/codebase-guardian-codebase-guardian
+rm "$GUARDIAN_DATA/indexes/{project-hash}/.validation-cache.json" "$GUARDIAN_DATA/indexes/{project-hash}/.validation-sessions.json"
 ```
 
 Always do this after deploying fixes that change allow/deny behavior.

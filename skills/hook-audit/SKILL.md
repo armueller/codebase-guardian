@@ -13,7 +13,10 @@ You are analyzing the Codebase Guardian validation hook's performance for this p
 ```bash
 PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 PROJECT_HASH=$(echo -n "$PROJECT_ROOT" | shasum -a 256 | cut -c1-12)
-GUARDIAN_HOME="${GUARDIAN_HOME:-$HOME/.codebase-guardian}"
+# Guardian's data now lives in the plugin's data dir. Prefer an explicit override,
+# then ${CLAUDE_PLUGIN_DATA} (substituted here when installed as a plugin, or read
+# from the environment), then the deterministic plugin data path as a guaranteed fallback.
+GUARDIAN_HOME="${GUARDIAN_HOME:-${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/codebase-guardian-codebase-guardian}}"
 LOG_PATH="$GUARDIAN_HOME/logs/$PROJECT_HASH/validation-debug.log"
 ```
 
