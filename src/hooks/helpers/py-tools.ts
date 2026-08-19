@@ -113,7 +113,8 @@ function runRuff(
   ruffBin: string,
   tmpFile: string,
   nearestPyproject: string | null,
-  timeoutMs: number
+  timeoutMs: number,
+  onError?: (msg: string) => void
 ): PyFinding[] {
   const args = ['check', '--output-format=json'];
   if (nearestPyproject) {
@@ -128,6 +129,9 @@ function runRuff(
     // ruff exits nonzero when it reports findings — the JSON is still on stdout.
     const stdoutFromError = (err as { stdout?: string })?.stdout;
     if (typeof stdoutFromError !== 'string') {
+      // No stdout means a real failure (ENOENT / timeout / signal), NOT findings.
+      // Fail open, but log so a broken ruff is not mistaken for a clean file.
+      onError?.(`ruff subprocess failed: ${(err as Error)?.message ?? 'unknown error'}`);
       return [];
     }
     stdout = stdoutFromError;
@@ -144,6 +148,7 @@ function runRuff(
       line: d.location?.row ?? null,
     }));
   } catch {
+    onError?.('ruff output was not valid JSON');
     return [];
   }
 }
@@ -170,7 +175,7 @@ const PYDOCLINT_FINDING_RE = /^\s*(\d+):\s+(DOC\d+):\s*(.*)$/;
  * @domain python-support, static-analysis, pydoclint
  * @tags pydoclint, subprocess, text-parsing, fail-open, execFileSync
  */
-function runPydoclint(pydoclintBin: string, tmpFile: string, timeoutMs: number): PyFinding[] {
+function runPydoclint(pydoclintBin: string, tmpFile: string, timeoutMs: number, onError?: (msg: string) => void): PyFinding[] {
   const args = [
     '--style=google',
     '--arg-type-hints-in-docstring=false',
@@ -188,6 +193,8 @@ function runPydoclint(pydoclintBin: string, tmpFile: string, timeoutMs: number):
     // pydoclint exits nonzero when it reports findings — the text output is on stderr, not stdout.
     const stderrFromError = (err as { stderr?: string })?.stderr;
     if (typeof stderrFromError !== 'string') {
+      // No stderr means a real failure, not findings. Fail open, but log it.
+      onError?.(`pydoclint subprocess failed: ${(err as Error)?.message ?? 'unknown error'}`);
       return [];
     }
     stderr = stderrFromError;
@@ -230,9 +237,10 @@ function runPydoclint(pydoclintBin: string, tmpFile: string, timeoutMs: number):
 export function runPyTools(
   filePath: string,
   postEditContent: string,
-  opts?: { timeoutMs?: number }
+  opts?: { timeoutMs?: number; onError?: (msg: string) => void }
 ): PyToolResults {
   const timeoutMs = opts?.timeoutMs ?? 8000;
+  const onError = opts?.onError;
   const guardianHome = getGuardianHome();
   const ruffBin = path.join(guardianHome, 'pyenv', 'bin', 'ruff');
   const pydoclintBin = path.join(guardianHome, 'pyenv', 'bin', 'pydoclint');
@@ -254,8 +262,9 @@ export function runPyTools(
     if (ruffAvailable) {
       try {
         const nearestPyproject = findNearestPyproject(filePath);
-        ruff = runRuff(ruffBin, tmpFile, nearestPyproject, timeoutMs);
-      } catch {
+        ruff = runRuff(ruffBin, tmpFile, nearestPyproject, timeoutMs, onError);
+      } catch (e) {
+        onError?.(`ruff runner threw: ${(e as Error)?.message ?? 'unknown error'}`);
         ruff = [];
       }
     }
@@ -263,14 +272,16 @@ export function runPyTools(
     let pydoclint: PyFinding[] = [];
     if (pydoclintAvailable) {
       try {
-        pydoclint = runPydoclint(pydoclintBin, tmpFile, timeoutMs);
-      } catch {
+        pydoclint = runPydoclint(pydoclintBin, tmpFile, timeoutMs, onError);
+      } catch (e) {
+        onError?.(`pydoclint runner threw: ${(e as Error)?.message ?? 'unknown error'}`);
         pydoclint = [];
       }
     }
 
     return { ruff, pydoclint };
-  } catch {
+  } catch (e) {
+    onError?.(`py-tools scratch-file setup failed: ${(e as Error)?.message ?? 'unknown error'}`);
     return { ruff: [], pydoclint: [] };
   } finally {
     if (tmpDir) {

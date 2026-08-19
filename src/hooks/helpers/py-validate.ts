@@ -214,7 +214,7 @@ export async function validatePythonEdit(
         log('[PY] intermediate/partial parse — allowing');
         return { action: 'allow', message: 'Python edit is a partial/intermediate state (allowing)' };
       }
-      log('[PY] extractor error — allowing (fail-open)');
+      log(`[PY] extractor error — allowing (fail-open)${extracted.detail ? ': ' + extracted.detail : ''}`);
       return { action: 'allow', message: 'Python extraction error (allowing edit)' };
     }
 
@@ -243,7 +243,10 @@ export async function validatePythonEdit(
 
     // ── Step 4: Deterministic tool findings (ruff + pydoclint) ──
 
-    const toolFindings = runPyTools(filePath, fullFileContent, { timeoutMs: 8000 });
+    const toolFindings = runPyTools(filePath, fullFileContent, {
+      timeoutMs: 8000,
+      onError: (m) => log(`[PY][TOOL-ERROR] ${m}`),
+    });
     log(`[PY] tools ruff:${toolFindings.ruff.length} pydoclint:${toolFindings.pydoclint.length}`);
 
     // ── Step 5: Check validation cache (exact same edit = skip AI) ──

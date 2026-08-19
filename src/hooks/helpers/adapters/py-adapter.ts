@@ -83,7 +83,7 @@ export type PyExtractResult =
       classes: ExtractedClass[];
       module: { docstring: string | null; domains: string[]; tags: string[]; layer: string | null };
     }
-  | { ok: false; reason: 'syntax' | 'error' | 'unavailable' };
+  | { ok: false; reason: 'syntax' | 'error' | 'unavailable'; detail?: string };
 
 // ─── Signature reconstruction ────────────────────────────────────────────────
 
@@ -280,22 +280,22 @@ export function extractPython(
         encoding: 'utf-8',
         env: { ...process.env, PYTHONPATH: pyPath },
       });
-    } catch {
-      return { ok: false, reason: 'error' };
+    } catch (e) {
+      return { ok: false, reason: 'error', detail: `guardian_py extract failed: ${(e as Error)?.message ?? 'unknown error'}` };
     }
 
     let payload: PyExtractPayload;
     try {
       payload = JSON.parse(stdout);
     } catch {
-      return { ok: false, reason: 'error' };
+      return { ok: false, reason: 'error', detail: 'guardian_py output was not valid JSON' };
     }
 
     if (payload.error === 'syntax') {
       return { ok: false, reason: 'syntax' };
     }
     if (payload.error) {
-      return { ok: false, reason: 'error' };
+      return { ok: false, reason: 'error', detail: `guardian_py reported: ${payload.error}` };
     }
 
     const functions: ExtractedFunction[] = [];
