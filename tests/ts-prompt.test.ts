@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildFirstAttemptPrompt } from '../src/hooks/helpers/claude-headless.js';
 import type { ExtractedFunction, ExtractedType, PropertyAccess } from '../src/hooks/helpers/types.js';
-import type { PatternContext, FunctionResult } from '../src/hooks/helpers/code-index-client.js';
+import type { PatternContext, FunctionResult, RelevantDoc } from '../src/hooks/helpers/code-index-client.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 //
@@ -85,6 +85,15 @@ const CALLER_FUNC: FunctionResult = {
   systemlayers: ['UI Helper'],
 };
 
+const RELEVANT_DOC: RelevantDoc = {
+  name: 'Financial Calculation Pattern',
+  filePath: 'docs/patterns/financial-calculation.md',
+  descriptionPreview: 'Standard pattern for fee and gain/loss calculations across the codebase.',
+  matchedDomains: ['pricing'],
+  matchedTags: ['calculation'],
+  matchScore: 3,
+};
+
 // Populated PatternContext, keyed by 'calculateTotal' — the name of the NEW
 // function under edit in FUNCTIONS below — matching how buildPatternContext
 // keys similarExistingFunctions/callerDetails by the modified/created function names.
@@ -95,7 +104,7 @@ const SAMPLE_PATTERN_CONTEXT: PatternContext = {
   unknownCalledFunctions: [],
   callerDetails: new Map([['calculateTotal', [CALLER_FUNC]]]),
   similarExistingFunctions: new Map([['calculateTotal', [SIMILAR_FUNC]]]),
-  relevantDocs: [],
+  relevantDocs: [RELEVANT_DOC],
   similarComments: [],
   directoryPatterns: {
     commonDomains: ['pricing'],
@@ -187,6 +196,14 @@ describe('buildFirstAttemptPrompt', () => {
     const prompt = buildFirstAttemptPrompt({ ...BASE_CONTEXT, patternContext: SAMPLE_PATTERN_CONTEXT });
     assert.ok(prompt.includes('== CALLERS OF MODIFIED FUNCTIONS (blast radius) =='));
     assert.ok(prompt.includes('calculateTotal is called by: renderInvoice (src/invoices/render.ts)'));
+  });
+
+  it('renders relevant project documentation matched by domain/tag overlap', () => {
+    const prompt = buildFirstAttemptPrompt({ ...BASE_CONTEXT, patternContext: SAMPLE_PATTERN_CONTEXT });
+    assert.ok(prompt.includes('== RELEVANT DOCUMENTATION (pattern guides, best practices) =='));
+    assert.ok(prompt.includes('Financial Calculation Pattern'));
+    assert.ok(prompt.includes('docs/patterns/financial-calculation.md'));
+    assert.ok(prompt.includes('Standard pattern for fee and gain/loss calculations across the codebase.'));
   });
 
   it('ends with the validation instruction', () => {
