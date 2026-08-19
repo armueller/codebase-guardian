@@ -33,12 +33,23 @@ import os
 # skip list, kept here so guardian_py doesn't have to trust the caller to
 # have already filtered the tree.
 EXCLUDED_DIRS = {
+    # Mirror src/mcp-server/indexer.ts WALK_EXCLUDE_DIRS exactly. callgraph walks
+    # from the repo root, so omitting node_modules et al. means Jedi traverses the
+    # whole dependency tree (stray .py files included) and blows the subprocess
+    # timeout — dropping ALL edges. Keep these two lists in sync.
+    "node_modules",
+    "dist",
+    ".claude",
+    "cdk.out",
+    "build",
+    "__snapshots__",
+    ".next",
+    ".turbo",
+    "coverage",
     ".venv",
     "__pycache__",
     ".pytest_cache",
     "site-packages",
-    "build",
-    "dist",
     ".mypy_cache",
     ".ruff_cache",
 }

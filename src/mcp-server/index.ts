@@ -31,6 +31,13 @@ import { buildCallGraph } from './call-graph.js';
 import { buildPythonCallGraph } from './py-call-graph.js';
 import { createIndexAPI } from '../shared/index-api.js';
 import { executeInSandbox } from './execute-sandbox.js';
+import { createRequire } from 'module';
+
+// Single source of truth for the server version — read from package.json so it
+// can never drift from the published plugin/package version (it did: was pinned
+// at 0.3.0 through several releases).
+const _require = createRequire(import.meta.url);
+const PKG_VERSION: string = _require('../../package.json').version ?? '0.0.0';
 
 // ─── Path Resolution ────────────────────────────────────────────────────────
 
@@ -344,7 +351,7 @@ function formatFunctionResult(func: FunctionResult, score?: number): string {
 // ─── MCP Server ─────────────────────────────────────────────────────────────
 
 const server = new Server(
-  { name: 'codebase-guardian', version: '0.3.0' },
+  { name: 'codebase-guardian', version: PKG_VERSION },
   { capabilities: { tools: {} } }
 );
 
