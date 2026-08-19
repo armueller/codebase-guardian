@@ -68,9 +68,9 @@ export function shouldSkipValidation(filePath: string): boolean {
  * @what Determines whether a file path is a Python source file
  * @how Lower-cases the path and checks for a trailing `.py` extension
  * @why Shared by pre-edit-validation.ts (to dispatch to validatePythonEdit instead of the ts-morph
- *   pipeline) and requiresCodeIndex below (Python has no code index coverage). Lives here rather than
- *   in pre-edit-validation.ts because that module auto-runs main() on import and cannot be imported
- *   from a test — this is the importable language-detection home.
+ *   pipeline) and requiresCodeIndex below. Lives here rather than in pre-edit-validation.ts because
+ *   that module auto-runs main() on import and cannot be imported from a test — this is the importable
+ *   language-detection home.
  *
  * @param {string} filePath Absolute path to the file being edited
  * @returns {boolean} True if the file is a `.py` source
@@ -87,10 +87,16 @@ export function isPythonFile(filePath: string): boolean {
 /**
  * @what Determines whether a file needs the TypeScript code index to be validated
  * @how Returns false for Python files, true otherwise
- * @why The PreToolUse hook's fail-open gate allows edits when the TS code index is unavailable, since
- *   most validation depends on it. Python edits are validated by a self-contained path
- *   (validatePythonEdit) that has zero code index coverage by design and degrades gracefully on its
- *   own — so an absent TS index must not block Python files from reaching that path.
+ * @why The PreToolUse hook's main() gates ALL validation on the TS code index being available
+ *   (isIndexAvailable), since the TS path (validateEdit) queries it directly. Python IS indexed as of
+ *   P3.3–P3.5 (guardian_py definitions + Jedi call edges, with Domain/Tags docstring metadata
+ *   normalized into the same domains/tags columns as TypeScript) and validatePythonEdit pulls that
+ *   pre-injected pattern context via buildPatternContext(..., 'py') — but it does so defensively,
+ *   catching a missing/empty/corrupt index and falling back to an empty pattern context rather than
+ *   failing. So requiresCodeIndex still returns false for Python: the main() gate exists to protect the
+ *   TS path specifically, and applying it to Python edits too would incorrectly block a Python-only
+ *   project (or one whose index hasn't been rebuilt yet) from ever reaching a path that already
+ *   tolerates an absent index on its own.
  *
  * @param {string} filePath Absolute path to the file being edited
  * @returns {boolean} True if the file's validation path depends on the TS code index

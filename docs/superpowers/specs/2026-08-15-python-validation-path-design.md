@@ -51,6 +51,25 @@ a real extractor.
 | Convention & linters | **Ours to define** | `ml/labelgen` is ~5 small modules; user will bring it up to a clean standard and add tooling. |
 | Deterministic-first | **Yes** | ruff/pydoclint/pyright own mechanical verdicts; LLM owns semantic judgment. |
 
+### Amendment (2026-08-19)
+
+The **type-check oracle decision above named pyright as an in-hook runner** (Task P2.2
+of the implementation plan). During Phase 2 implementation this was reframed:
+**pyright is a CI/type gate, not an in-hook runner.** In-hook latency was the reason —
+running a third subprocess (after `guardian_py extract` + `ruff`) on every edit was
+weighed against the fail-open, sub-second-feeling budget the hook targets, and pyright
+was the most expensive of the three. `ruff` + `pydoclint` are the in-hook deterministic
+tools (`src/hooks/helpers/py-tools.ts`); the Python validation prompt tells the LLM
+explicitly that "pyright runs in CI, not here" and to bias warn-not-deny on
+runtime/type/attribute/API concerns accordingly (`claude-headless.ts`).
+
+As of this amendment, **no CI workflow exists in this repository** (`.github/workflows/`
+is absent, and no other CI config invokes pyright) — so `pyright==1.1.411` in
+`requirements-python.txt` is currently an **unused pin**: it is provisioned into the
+guardian's managed pyenv venv by `scripts/build.sh` (for future CI or manual use) but
+nothing invokes it. Flagged for removal or for wiring up an actual CI job — left to the
+repo owner to decide; this amendment does not remove the pin.
+
 ## Research Findings — principle transfer verdicts
 
 1. **Documentation completeness & accuracy — transfers with adaptation.** Accuracy

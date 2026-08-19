@@ -161,7 +161,8 @@ async function main() {
  * @what Validates an edit operation against the code index and headless Claude, or (for Python files)
  *   delegates to the dedicated Python validation path
  * @how Constructs post-edit file content, then dispatches `.py` files to validatePythonEdit
- *   (its own guardian_py extraction + docstring-based flow, with no code index coverage). For
+ *   (its own guardian_py extraction + docstring-based flow, pulling pre-injected code-index pattern
+ *   context via buildPatternContext(..., 'py') now that the index has Python coverage). For
  *   TypeScript files, continues: extracts functions, runs local JSDoc checks, checks cache, gathers
  *   code index context, executes headless Claude with session resume
  * @why Main validation logic — coordinates extraction, local checks, code index queries, and AI
@@ -211,8 +212,10 @@ async function validateEdit(input: HookInput): Promise<HookResponse> {
   // Python edits are dispatched to their own self-contained validation path — see
   // py-validate.ts. It mirrors this function's cache/session/circuit-breaker/headless
   // scaffolding but substitutes guardian_py extraction + Python-specific prompts for
-  // the ts-morph pieces below, since Python has no code index coverage and uses
-  // docstrings rather than JSDoc.
+  // the ts-morph pieces below, since Python uses docstrings rather than JSDoc. The
+  // Python index now has coverage too (P3.3 definitions, P3.4 call edges) — py-validate.ts
+  // pulls pre-injected sibling/similar/caller/doc pattern context from it, language-scoped
+  // to 'py' via buildPatternContext.
   if (isPythonFile(filePath)) {
     return await validatePythonEdit(input, fullFileContent, currentFileOnDisk, startTime);
   }
