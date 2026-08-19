@@ -16,6 +16,7 @@ import {
 } from './db.js';
 import { generateEmbeddings, invalidateCache } from './embeddings.js';
 import { resolveConfig } from '../config.js';
+import { isPythonTestFile } from '../shared/py-paths.js';
 import { extractPythonFile, type PyExtracted } from './py-index.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -632,27 +633,6 @@ const WALK_EXCLUDE_DIRS = [
   '.venv', '__pycache__', '.pytest_cache', 'site-packages', '.mypy_cache', '.ruff_cache',
 ];
 
-/**
- * @what Determines whether a Python file should be skipped as a test file during indexing
- * @how Matches the filename against `test_*.py` / `*_test.py`, OR checks whether the path relative
- *   to the directory being walked contains a `tests` path segment
- * @why Python test functions are low-value to index (docstring-exempt, not part of the public API
- *   surface) — mirrors the `.test.ts`/`.test.tsx` skip already applied to TypeScript
- *
- * @param {string} fileName The file's base name (e.g. `test_foo.py`)
- * @param {string} relFromScanRoot The file's path relative to the directory walkDirectory started from
- * @returns {boolean} True if the file should be skipped
- *
- * @sideeffects None
- * @systemlayer Business Logic
- * @domain code-index, python-support
- * @tags python, test-skip, indexer, walk
- */
-function isPythonTestFile(fileName: string, relFromScanRoot: string): boolean {
-  if (/^test_.*\.py$/.test(fileName) || /_test\.py$/.test(fileName)) return true;
-  const segments = relFromScanRoot.split(path.sep);
-  return segments.includes('tests');
-}
 
 function walkDirectory(dir: string, extensions: string[]): string[] {
   const files: string[] = [];
@@ -678,7 +658,7 @@ function walkDirectory(dir: string, extensions: string[]): string[] {
         const ext = path.extname(entry.name);
         if (!extensions.includes(ext)) continue;
         if (entry.name.endsWith('.test.ts') || entry.name.endsWith('.test.tsx')) continue;
-        if (ext === '.py' && isPythonTestFile(entry.name, path.relative(dir, fullPath))) continue;
+        if (ext === '.py' && isPythonTestFile(path.relative(dir, fullPath))) continue;
         files.push(fullPath);
       }
     }

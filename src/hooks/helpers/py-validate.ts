@@ -37,6 +37,7 @@ import {
   PY_SYSTEM_PROMPT
 } from './py-prompts.js';
 import { buildPatternContext, type PatternContext } from './code-index-client.js';
+import { isPythonTestFile } from '../../shared/py-paths.js';
 import {
   getCachedValidation,
   generateCacheKey,
@@ -233,10 +234,7 @@ export async function validatePythonEdit(
 
     // ── Step 3: Test-file relaxation — tests are exempt from docstring requirements ──
 
-    const isTestFile =
-      /(^|\/)tests?\//.test(filePath) ||
-      /(^|\/)test_[^/]*\.py$/.test(filePath) ||
-      /_test\.py$/.test(filePath);
+    const isTestFile = isPythonTestFile(filePath);
     const docViolations = isTestFile
       ? new Map<string, string[]>()
       : checkPythonDocCompleteness(extracted.functions, extracted.classes, extracted.module);
