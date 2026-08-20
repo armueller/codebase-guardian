@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import path from 'path';
 import Database from 'better-sqlite3';
 import { categorizeViolations, deriveOutcome, recordDecision } from '../src/hooks/helpers/metrics.js';
+import { buildMetricsReport } from '../src/mcp-server/metrics-query.js';
 
 // Point the store at a throwaway dir. getGuardianHome() reads this lazily (on the first
 // recordDecision call), so setting it here — before any test runs — is sufficient.
@@ -58,5 +59,25 @@ describe('recordDecision', () => {
     assert.equal(row.headless_ms, 1234);
     assert.equal(row.file_ext, '.ts');
     assert.equal(row.project_name, 'proj');
+  });
+});
+
+describe('buildMetricsReport', () => {
+  it('renders rate, outcome, and per-project sections over recorded decisions', () => {
+    recordDecision({ decision: 'allow', message: 'Code Quality Passed', projectName: 'reportproj', headlessRan: true, headlessMs: 900 });
+    recordDecision({ decision: 'deny', message: 'BLOCKED: dup', violations: ['duplicates existing foo'], projectName: 'reportproj', headlessRan: true, headlessMs: 1100 });
+
+    const report = buildMetricsReport({ sinceDays: null, projectFilter: null });
+    assert.match(report, /Decision Metrics/);
+    assert.match(report, /Overall:/);
+    assert.match(report, /Genuine judgments:/);
+    assert.match(report, /By project:/);
+    assert.ok(report.includes('reportproj'), 'names the project it recorded');
+    assert.match(report, /Headless validation time/);
+  });
+
+  it('returns a clear message when the filter matches nothing', () => {
+    const report = buildMetricsReport({ sinceDays: null, projectFilter: 'no-such-project-xyz' });
+    assert.equal(report, 'No decisions match that filter.');
   });
 });

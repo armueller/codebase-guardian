@@ -185,6 +185,7 @@ your-project/
 | `list_systemlayers` | List architectural layers (Business Logic, UI Helper, Data Layer, etc.) |
 | `search_comments` | FTS5 search over inline comments within function bodies |
 | `search_doc_sections` | FTS5 search over documentation sections by heading |
+| `metrics` | Report the guardian's durable allow/deny metrics (rates, outcomes, deny categories, per-project, timing) over an optional window/project |
 
 ### The Three Index Tiers
 
