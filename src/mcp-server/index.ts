@@ -31,6 +31,7 @@ import { buildCallGraph } from './call-graph.js';
 import { buildPythonCallGraph } from './py-call-graph.js';
 import { createIndexAPI } from '../shared/index-api.js';
 import { executeInSandbox } from './execute-sandbox.js';
+import { buildMetricsReport } from './metrics-query.js';
 import { createRequire } from 'module';
 
 // Single source of truth for the server version — read from package.json so it
@@ -190,6 +191,17 @@ const TOOL_DEFINITIONS = [
         code: { type: 'string', description: 'JavaScript code to execute. Use the `api` object. Return your result.' },
       },
       required: ['code'],
+    },
+  },
+  {
+    name: 'metrics',
+    description: 'Report the guardian\'s durable decision metrics: allow/deny rates (overall and on genuine headless-validated judgments), outcome buckets, deny-reason categories, per-project rates, and headless-validation timing. Answers "is the guardian useful?" over time. Data is global across every project the hook has run on; use `project` to focus on one, and `since_days` to bound the window.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        since_days: { type: 'number', description: 'Only include decisions from the last N days (default: all time)' },
+        project: { type: 'string', description: 'Filter to a project by name/root substring (default: all projects)' },
+      },
     },
   },
 ];
@@ -653,6 +665,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }],
           };
         }
+      }
+
+      case 'metrics': {
+        const rawSince = (args as Record<string, unknown>).since_days;
+        let sinceDays: number | null = null;
+        if (rawSince !== undefined && rawSince !== null) {
+          const n = Number(rawSince);
+          if (!Number.isFinite(n) || n <= 0) {
+            return { content: [{ type: 'text', text: 'Error: "since_days" must be a positive number of days.' }], isError: true };
+          }
+          sinceDays = n;
+        }
+        const rawProject = (args as Record<string, unknown>).project;
+        const projectFilter = typeof rawProject === 'string' && rawProject.trim() ? rawProject.trim() : null;
+
+        return { content: [{ type: 'text', text: buildMetricsReport({ sinceDays, projectFilter }) }] };
       }
 
       default:
