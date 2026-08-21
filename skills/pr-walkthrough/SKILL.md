@@ -19,7 +19,16 @@ This skill is **plugin-owned and project-agnostic**. Project specifics come from
 
 **Search order for both: `.guardian/`, then `.claude/`.** Take the first that exists. Many projects gitignore `.guardian/` wholesale (it is where the validation hook stages per-dev suggestions), which makes a config placed there uncommittable and therefore invisible to the rest of the team. If you find a config only in `.guardian/` and that path is gitignored, say so — the project probably intends it to be shared.
 
-Both files are optional. With neither, run the generic phases and disclose what was skipped. **Read the config first**, then the checklists.
+**Per-dev overrides: `pr-walkthrough.local.json`**, same search order, shallow-merged *over* the committed config. This file is not committed — it falls under the project's normal `.guardian/*` ignore rule.
+
+The committed config describes **the project**; the local file describes **this developer**. Anything that is a personal preference belongs in the local file, because a committed value would silently impose one person's setup on everyone:
+
+- `recordDestination` — where a finished review record is filed. One person's notes vault is not the team's.
+- `notesPath` — where running notes are kept.
+
+If you find a personal-looking path in the *committed* config — a home directory, a cloud-sync folder, a single person's name — flag it. It is almost always meant to be local.
+
+All files are optional. With none, run the generic phases and disclose what was skipped. **Read the committed config first, then the local override, then the checklists.**
 
 ## ⚠️ Execution model — this runs INLINE (the inverse of pr-audit)
 
@@ -166,4 +175,6 @@ Check these on every PR whose description or code was largely model-generated:
 
 ## Review record
 
-Maintain a running notes file (`config.notesPath`, default a session scratchpad) with the pinned baseline, the classification, per-slice findings, and the reviewer's confirmed reactions. Long reviews outlive a single context window; the notes file is what survives. Offer to file a final record wherever `config.recordDestination` points.
+Maintain a running notes file (`config.notesPath`, default a session scratchpad) with the pinned baseline, the classification, per-slice findings, and the reviewer's confirmed reactions. Long reviews outlive a single context window; the notes file is what survives.
+
+At the end, offer to file a final record wherever `config.recordDestination` points. Both of these are per-dev settings — read them from `pr-walkthrough.local.json`, not the committed config. **If neither is set, do not guess a location**: say the record is in the scratchpad, mention that setting `recordDestination` in the local file would file it automatically next time, and let the reviewer say where they want it.

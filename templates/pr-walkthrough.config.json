@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "_comment": "Optional per-project config for the pr-walkthrough skill. Place at .guardian/pr-walkthrough.config.json in the project root. All fields are optional — the skill runs generic phases with defaults and discloses what it skipped.",
+  "_comment": "Optional per-PROJECT config for the pr-walkthrough skill. Place at .guardian/pr-walkthrough.config.json and commit it. All fields are optional — the skill runs generic phases with defaults and discloses what it skipped. Per-DEVELOPER settings do not belong here; put those in .guardian/pr-walkthrough.local.json, which is not committed and is shallow-merged over this file.",
   "version": 1,
 
   "_priorArtifacts": "Marker comments on the PR that the walkthrough ingests as INPUT to adjudicate, rather than re-deriving. Each is located by grepping issue comments for its marker string.",
@@ -19,12 +19,8 @@
     "urlTemplate": null
   },
 
-  "_notesPath": "Running review notes. Survives context compaction on long reviews. Defaults to the session scratchpad when null.",
-  "notesPath": null,
-
-  "_recordDestination": "Where to offer to file the finished review record. Null means don't offer.",
-  "recordDestination": null,
-
   "_checklistsFile": "Stack-specific blind-spot checks, injected into Phase 1 (classification) and Phase 3 (per-slice bench).",
-  "checklistsFile": ".guardian/pr-walkthrough.checklists.md"
+  "checklistsFile": ".guardian/pr-walkthrough.checklists.md",
+
+  "_perDeveloperFields": "notesPath and recordDestination are intentionally absent here. They are personal paths — a committed value imposes one person's setup on the whole team. See pr-walkthrough.local.example.json."
 }
