@@ -92,7 +92,8 @@ Guardian's index **normalizes both into the same fields** (`domains`, `tags`, `s
 
 ## Phase 0 — Setup
 
-- [ ] **Load config.** Read `.guardian/pr-audit.config.json` if it exists: `baseline{typecheck,lint,test}`, `docDirs`, `staffReview.minDiffLinesForFullPass` (default 100), `impact.depth` (default 2), `suggestionStaging.filePath` (default `.guardian/suggestions.md`), `marker.commentMarker` (default `<!-- pr-audit:v1 -->`) + `marker.ciCheckJob`, `deferredBugProtocol{requireGitHubIssue,repo}`, `plan.vaultDir`, `checklistsFile` (default `.guardian/pr-audit.checklists.md`). If the file is absent, use the defaults and note "No pr-audit.config.json — using defaults" in the comment preamble.
+- [ ] **Load config.** Read `pr-audit.config.json` if it exists — search `.guardian/` first, then `.claude/`, taking the first that exists. Fields: `baseline{typecheck,lint,test}`, `docDirs`, `staffReview.minDiffLinesForFullPass` (default 100), `impact.depth` (default 2), `suggestionStaging.filePath` (default `.guardian/suggestions.md`), `marker.commentMarker` (default `<!-- pr-audit:v1 -->`) + `marker.ciCheckJob`, `deferredBugProtocol{require,tracker}` (see Deferred-bug protocol), `plan.vaultDir`, `checklistsFile` (default `.guardian/pr-audit.checklists.md`). If the file is absent, use the defaults and note "No pr-audit.config.json — using defaults" in the comment preamble.
+  - **If you find the config only under a gitignored path**, say so in the preamble. `.guardian/` is commonly ignored wholesale, which silently makes a project's shared config invisible to everyone but its author. Note that `.guardian` without a trailing slash excludes the directory itself, so `!` whitelists inside it cannot take effect — the pattern must be `.guardian/*` plus negations.
 - [ ] **Rebuild the index if indexed files changed.** Run `git diff <base>...HEAD --name-only` and check for changes to files Guardian indexes (source in the configured `docDirs`/source tree, `.md` docs, and — depending on language — `.ts`/`.tsx`/`.py`). If any changed, rebuild via `mcp__codebase-guardian__rebuild_index` and wait for completion (accept 30s–2min latency). A stale index produces false negatives. If NOTHING indexable changed, skip the rebuild and note it explicitly. When in doubt, rebuild.
 - [ ] **Locate the plan.** If `plan.vaultDir` is set, list it and match a plan to the current branch/feature. If multiple match, ask the dev. If none, flag as a Missing Piece and proceed. If `plan.vaultDir` is unset, skip Phase 8 later.
 - [ ] **Gather diff scope:** `git log <base>..HEAD --oneline --no-merges`, `git diff <base>...HEAD --stat`, `git diff <base>...HEAD --name-only`. Identify the base branch (`main` unless the plan or branch name says otherwise).
@@ -237,7 +238,17 @@ Leave the Resolution Log empty after posting; the dev appends over time.
 
 ## Deferred-bug protocol
 
-If `deferredBugProtocol.requireGitHubIssue` is true, a deferred 🔴 BUG's link MUST be a GitHub issue URL (not a bare reference or TODO). To defer: `gh issue create -R <deferredBugProtocol.repo> --title "<bug>" --body "Deferred from PR #<N>: <BUG-K>"`, check the BUG's box, and append `→ deferred, tracked in <issue url>`. Before completing, remind the dev: "If any 🔴 BUGS remain unresolved, either fix them or follow the deferred-bug protocol."
+If `deferredBugProtocol.require` is true, a deferred 🔴 BUG MUST be linked to a real tracker item — not a bare reference or a TODO. Check the BUG's box and append `→ deferred, tracked in <url>`. Before completing, remind the dev: "If any 🔴 BUGS remain unresolved, either fix them or follow the deferred-bug protocol."
+
+How the item is created depends on `deferredBugProtocol.tracker.type`:
+
+| type | create with | link |
+|---|---|---|
+| `github` | `gh issue create -R <tracker.repo> --title "<bug>" --body "Deferred from PR #<N>: <BUG-K>"` | the issue URL `gh` returns |
+| `jira` | `acli` against project `<tracker.projectPrefix>` — look up current `acli` usage before invoking it rather than assuming flags | `tracker.urlTemplate` with `{key}` replaced by the issue key |
+| absent | no tracker configured — record the deferral in the marker comment and tell the dev to file it manually | n/a |
+
+**Backward compatibility:** if `deferredBugProtocol.requireGitHubIssue` is present, treat it as `require: true` with `tracker: { type: "github", repo: <deferredBugProtocol.repo> }`.
 
 ## Open Questions — philosophy
 

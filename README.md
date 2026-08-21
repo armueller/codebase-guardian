@@ -383,7 +383,7 @@ The `/pr-audit` skill runs a comprehensive, language-agnostic pre-merge audit of
   "impact": { "depth": 2 },
   "suggestionStaging": { "filePath": ".guardian/suggestions.md", "clearAfterAudit": true },
   "marker": { "commentMarker": "<!-- pr-audit:v1 -->", "ciCheckJob": null },
-  "deferredBugProtocol": { "requireGitHubIssue": true, "repo": "owner/repo" },
+  "deferredBugProtocol": { "require": true, "tracker": { "type": "github", "repo": "owner/repo" } },
   "plan": { "vaultDir": "~/path/to/implementation/plans" },
   "checklistsFile": ".guardian/pr-audit.checklists.md"
 }
@@ -392,22 +392,41 @@ The `/pr-audit` skill runs a comprehensive, language-agnostic pre-merge audit of
 - **`baseline`** — commands the audit runs to *empirically* verify the PR (it never trusts the PR description's claims about type-check/lint/tests). Set any to `null` to skip it.
 - **`docDirs`** — where your architecture/pattern/best-practice docs live (used for documentation-alignment checks against changed code).
 - **`marker.ciCheckJob`** — name of an optional CI job that enforces the marker comment's presence; leave `null` if you don't have one. The comment is always posted regardless.
-- **`deferredBugProtocol.repo`** — GitHub repo for deferred-bug tracking issues.
+- **`deferredBugProtocol.tracker`** — where a deferred 🔴 BUG gets filed. `{ "type": "github", "repo": "owner/repo" }` files via `gh issue create`; `{ "type": "jira", "projectPrefix": "ABC", "urlTemplate": "https://you.atlassian.net/browse/{key}" }` files via `acli`. Omit the whole `deferredBugProtocol` block to skip tracker enforcement. The legacy `{ "requireGitHubIssue": true, "repo": "..." }` shape is still honored.
 - **`plan.vaultDir`** — where implementation plans live (for plan-vs-code cross-reference); omit to skip that phase.
 
 All fields are optional — omit the file entirely to run with defaults.
 
 **`.guardian/pr-audit.checklists.md`** — free-form prose domain checks the audit runs against your diff (project invariants, business rules, per-area checklists). Each item states the severity to assign on failure; findings still require concrete evidence. See this repo's own [`.guardian/pr-audit.checklists.md`](.guardian/pr-audit.checklists.md) for a worked example — it encodes Guardian's own fail-open / hook-output / boundary invariants as auditable items.
 
-**Commit both files.** Guardian ignores runtime output under `.guardian/` but whitelists these two — mirror this in your `.gitignore`:
+**Commit both files.** Guardian ignores runtime output under `.guardian/` but whitelists the committed config — mirror this in your `.gitignore`:
 
 ```gitignore
 .guardian/*
 !.guardian/pr-audit.config.json
 !.guardian/pr-audit.checklists.md
+!.guardian/pr-walkthrough.config.json
+!.guardian/pr-walkthrough.checklists.md
 ```
 
+> **The trailing `/*` matters.** Ignoring `.guardian` (no slash) excludes the *directory*, and git will not descend into an excluded directory — so the `!` negations below it can never take effect and your shared config silently stays untracked. If your project already has a bare `.guardian` rule, this is the fix.
+
 **Run it:** `/pr-audit <PR#>` (or `/pr-audit` for the current branch's PR). The skill rebuilds the index if indexed files changed, dispatches the audit subagent through all phases, and posts (and later updates) a marker comment on the PR. It is language-agnostic — the same skill audits TypeScript and Python PRs, reasoning about documentation via Guardian's normalized metadata rather than language-specific tags.
+
+### PR Walkthrough Setup
+
+`/pr-audit` produces findings. `/pr-walkthrough` produces **understanding** — it is a companion for the human reviewer, not a second audit.
+
+It exists because PRs have grown large and increasingly machine-authored, which makes them hard to hold in your head. An audit hands you a verdict to trust or re-derive; that is not review. The walkthrough pins the true before-state, proves which files are mechanical churn and which carry behavior, slices the diff into vertical behaviors, and walks you through each one — real code, full control flow, one slice at a time — then drafts and posts your review.
+
+Unlike `/pr-audit`, it runs **inline** rather than in a subagent: the dialogue with you is the deliverable, and a subagent cannot be interrupted or argued with. Subagents are used only for the read-only classification fan-out.
+
+Two optional committed files tailor it, same pattern as the audit:
+
+- **`.guardian/pr-walkthrough.config.json`** — prior-artifact markers to ingest and adjudicate (so it does not re-derive your audit's findings), doc dirs, issue tracker, where the review record is filed. See [`templates/pr-walkthrough.config.json`](templates/pr-walkthrough.config.json).
+- **`.guardian/pr-walkthrough.checklists.md`** — stack-specific blind-spot checks. The skill ships a generic taxonomy of what each *kind* of change tends to hide (renames hide referential problems, extractions hide widened preconditions, permission bypasses hide compound effects); this file holds your stack's concrete instantiations.
+
+**Run it:** `/pr-walkthrough <PR#>`.
 
 ### Environment Variables
 
