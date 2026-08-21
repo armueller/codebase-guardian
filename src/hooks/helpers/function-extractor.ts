@@ -134,6 +134,14 @@ export interface DiscoveredFunction {
 }
 
 /**
+ * React/MobX hooks whose call returns a *value*, not a function. `const x = useMemo(function f(){})`
+ * assigns a value to `x`, so the enclosing const is not a function declaration (only the inner callback
+ * is tracked). This distinguishes value-returning hooks from function-wrapping calls like
+ * `observer()` / `React.memo()`, which DO yield a function and whose enclosing const IS captured.
+ */
+const VALUE_RETURNING_HOOKS = new Set(['useMemo', 'useRef', 'useState', 'useReducer', 'useContext']);
+
+/**
  * @what Discovers all function-like declarations in a source file
  * @how Walks the ts-morph AST to find function declarations, variable declarations with
  *   function/arrow initializers, class methods, and object method properties
@@ -207,8 +215,7 @@ function discoverFunctions(sourceFile: SourceFile, content: string): Map<string,
         const callExpr = init.asKindOrThrow(SyntaxKind.CallExpression);
         const calleeName = callExpr.getExpression().getText();
 
-        const valueReturningHooks = new Set(['useMemo', 'useRef', 'useState', 'useReducer', 'useContext']);
-        if (!valueReturningHooks.has(calleeName)) {
+        if (!VALUE_RETURNING_HOOKS.has(calleeName)) {
           const callArgs = callExpr.getArguments();
           if (callArgs.length > 0) {
             const firstArgKind = callArgs[0].getKind();
@@ -272,6 +279,20 @@ function discoverFunctions(sourceFile: SourceFile, content: string): Map<string,
       if (parent?.getKind() === SyntaxKind.VariableDeclaration) {
         const parentName = (parent as any).getName?.();
         if (parentName === name) return;
+      }
+
+      // Skip the wrapped callback of a variable declaration —
+      // const X = observer(function Y() {}) — where case 2 already captured X
+      // spanning this function. Without this guard, Y is double-counted as its
+      // own declaration and its body gets misattributed as a separate changed
+      // function (e.g. re-litigating unchanged nested code inside a wrapped component).
+      // Only skip when case 2 actually captured the enclosing const: value-returning
+      // hooks (useMemo, etc.) are NOT captured there, so their inner named functions
+      // must still be tracked here.
+      if (parent?.getKind() === SyntaxKind.CallExpression &&
+          parent?.getParent()?.getKind() === SyntaxKind.VariableDeclaration) {
+        const callee = (parent as any).getExpression?.()?.getText?.() ?? '';
+        if (!VALUE_RETURNING_HOOKS.has(callee)) return;
       }
 
       const nodeStart = funcExpr.getStart();
