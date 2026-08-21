@@ -19,8 +19,10 @@ PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 # Compute the project hash (first 12 chars of SHA-256 of project root)
 PROJECT_HASH=$(echo -n "$PROJECT_ROOT" | shasum -a 256 | cut -c1-12)
 
-# Guardian paths
-GUARDIAN_HOME="${GUARDIAN_HOME:-$HOME/.codebase-guardian}"
+# Guardian paths. Data now lives in the plugin's data dir. Prefer an explicit override,
+# then ${CLAUDE_PLUGIN_DATA} (substituted here when installed as a plugin, or read
+# from the environment), then the deterministic plugin data path as a guaranteed fallback.
+GUARDIAN_HOME="${GUARDIAN_HOME:-${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/codebase-guardian-codebase-guardian}}"
 DB_PATH="$GUARDIAN_HOME/indexes/$PROJECT_HASH/code-quality.db"
 ```
 
@@ -101,7 +103,7 @@ After presenting the report, offer these actions:
    - `@systemlayer` — Inferred from directory patterns
    - `@tags` — AI-generated searchable keywords (minimum 5)
 
-2. **Add JSDoc standards to CLAUDE.md** — Check if the project's CLAUDE.md contains the `<!-- codebase-guardian -->` marker. If not, offer to append the JSDoc standards snippet from `~/.codebase-guardian/source/templates/claude-md-snippet.md`.
+2. **Add JSDoc standards to CLAUDE.md** — Check if the project's CLAUDE.md contains the `<!-- codebase-guardian -->` marker. If not, offer to append the JSDoc standards snippet from the plugin's template at `${CLAUDE_PLUGIN_ROOT}/templates/claude-md-snippet.md`.
 
 3. **Rebuild index** — If many functions were updated, offer to trigger a full index rebuild.
 

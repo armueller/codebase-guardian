@@ -8,8 +8,8 @@
  *   npx tsx scripts/replay-edit.ts <log-file> --last-deny
  *
  * Examples:
- *   npx tsx scripts/replay-edit.ts ~/.codebase-guardian/logs/cac76e65de98/validation-debug.log 2026-03-30T18:11:29
- *   npx tsx scripts/replay-edit.ts ~/.codebase-guardian/logs/cac76e65de98/validation-debug.log --last-deny
+ *   npx tsx scripts/replay-edit.ts ~/.claude/plugins/data/codebase-guardian-codebase-guardian/logs/cac76e65de98/validation-debug.log 2026-03-30T18:11:29
+ *   npx tsx scripts/replay-edit.ts ~/.claude/plugins/data/codebase-guardian-codebase-guardian/logs/cac76e65de98/validation-debug.log --last-deny
  *
  * This parses the log entry, reconstructs the hook input, runs it through
  * the validation pipeline, and shows detailed diagnostics at each step.
