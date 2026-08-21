@@ -393,7 +393,7 @@ The `/pr-audit` skill runs a comprehensive, language-agnostic pre-merge audit of
 - **`docDirs`** — where your architecture/pattern/best-practice docs live (used for documentation-alignment checks against changed code).
 - **`marker.ciCheckJob`** — name of an optional CI job that enforces the marker comment's presence; leave `null` if you don't have one. The comment is always posted regardless.
 - **`deferredBugProtocol.tracker`** — where a deferred 🔴 BUG gets filed. `{ "type": "github", "repo": "owner/repo" }` files via `gh issue create`; `{ "type": "jira", "projectPrefix": "ABC", "urlTemplate": "https://you.atlassian.net/browse/{key}" }` files via `acli`. Omit the whole `deferredBugProtocol` block to skip tracker enforcement. The legacy `{ "requireGitHubIssue": true, "repo": "..." }` shape is still honored.
-- **`plan.vaultDir`** — where implementation plans live (for plan-vs-code cross-reference); omit to skip that phase.
+- **`plan.vaultDir`** — where implementation plans live (for plan-vs-code cross-reference); omit to skip that phase. Use a repo-relative path if plans are committed (`docs/plans`). If your plans live in a personal notes vault, that is a *per-developer* setting — put it in `pr-audit.local.json` instead, or you will point the whole team at your home directory.
 
 All fields are optional — omit the file entirely to run with defaults.
 
@@ -423,8 +423,22 @@ Unlike `/pr-audit`, it runs **inline** rather than in a subagent: the dialogue w
 
 Two optional committed files tailor it, same pattern as the audit:
 
-- **`.guardian/pr-walkthrough.config.json`** — prior-artifact markers to ingest and adjudicate (so it does not re-derive your audit's findings), doc dirs, issue tracker, where the review record is filed. See [`templates/pr-walkthrough.config.json`](templates/pr-walkthrough.config.json).
+- **`.guardian/pr-walkthrough.config.json`** — prior-artifact markers to ingest and adjudicate (so it does not re-derive your audit's findings), doc dirs, issue tracker, checklists path. See [`templates/pr-walkthrough.config.json`](templates/pr-walkthrough.config.json).
 - **`.guardian/pr-walkthrough.checklists.md`** — stack-specific blind-spot checks. The skill ships a generic taxonomy of what each *kind* of change tends to hide (renames hide referential problems, extractions hide widened preconditions, permission bypasses hide compound effects); this file holds your stack's concrete instantiations.
+
+### Committed config vs per-developer overrides
+
+Both skills read an optional **`*.local.json`** beside the committed config, shallow-merged over it and never committed — it falls under the project's normal `.guardian/*` ignore rule.
+
+**The committed file describes the project. The local file describes the developer.** Where you keep your review notes, or your implementation plans, is not a project decision: a committed value silently points the whole team at one person's home directory. See [`templates/pr-walkthrough.local.example.json`](templates/pr-walkthrough.local.example.json).
+
+| Setting | Belongs in |
+| --- | --- |
+| `priorArtifacts`, `docDirs`, `checklistsFile`, `issueTracker`, `baseline`, `marker` | committed config |
+| `recordDestination`, `notesPath` | `pr-walkthrough.local.json` |
+| `plan.vaultDir` | committed if plans are in-repo; `pr-audit.local.json` if they live in a personal vault |
+
+Both skills flag a personal-looking path found in a committed config, and neither guesses a destination when none is set.
 
 **Run it:** `/pr-walkthrough <PR#>`.
 

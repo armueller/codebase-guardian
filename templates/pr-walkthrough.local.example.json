@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "_comment": "Per-DEVELOPER overrides for the pr-walkthrough skill. Copy to .guardian/pr-walkthrough.local.json. NOT committed — it falls under the project's .guardian/* ignore rule. Shallow-merged over the committed pr-walkthrough.config.json, so any field from that file can be overridden here; these two are the ones that usually should be.",
+
+  "_notesPath": "Where running review notes are kept. Null (or absent) uses the session scratchpad.",
+  "notesPath": null,
+
+  "_recordDestination": "Where to offer to file the finished review record — your notes vault, a local directory, wherever you keep them. Absent means the skill will not guess: it leaves the record in the scratchpad and asks.",
+  "recordDestination": "~/notes/pr-reviews/"
+}
