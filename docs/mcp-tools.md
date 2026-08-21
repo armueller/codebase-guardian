@@ -152,6 +152,19 @@ No parameters.
 
 **When to use:** Checking if the index is up to date before relying on search results.
 
+### `metrics`
+
+Report the guardian's durable decision metrics from the cross-project decisions store (`metrics.db`) — a measure of how useful the guardian is over time. Read-only.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `since_days` | number | No | Only include decisions from the last N days (default: all time) |
+| `project` | string | No | Filter to a project by name/root substring (default: all projects) |
+
+**Output:** Allow/deny rates (overall and on genuine headless-validated judgments), outcome buckets (`quality_pass`, `deny_blocked`, `fail_open_timeout`, `circuit_breaker`, …), deny-reason categories, per-project rates, and headless-validation timing percentiles.
+
+**When to use:** To measure whether the guardian is catching real issues and where it spends time — all-time, or scoped with `since_days` / `project`. The same report is available from the CLI via `npm run metrics`.
+
 ## Configuration
 
 ### MCP Server Registration (`.mcp.json`)

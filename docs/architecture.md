@@ -138,6 +138,9 @@ Language dispatch: is this a .py file (isPythonFile)?
 Emit decision as PreToolUse hookSpecificOutput JSON on stdout, process.exitCode = 0
 (never exit(2)/stderr, never process.exit() — see CLAUDE.md's "Hook Output
 Protocol & Exit Discipline")
+    │
+    ▼
+Record the decision to metrics.db (durable cross-project store; fail-safe, never breaks the hook)
 ```
 
 ### 2b. Python Edit Path (`validatePythonEdit`, `py-validate.ts`)
@@ -288,6 +291,7 @@ ${CLAUDE_PLUGIN_DATA}/                 # or ~/.codebase-guardian/ at the dev/fal
 │   └── .validation-sessions.json
 ├── logs/{project-hash}/
 │   └── validation-debug.log
+├── metrics.db                         # Durable cross-project decision metrics store (queried by the `metrics` tool / `npm run metrics`)
 ├── .build-stamp                       # Hash of package.json; rebuild trigger
 └── projects.json                      # Hash → name/path manifest
 ```
