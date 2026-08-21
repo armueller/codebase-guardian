@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "_comment": "Optional per-project config for the pr-walkthrough skill. Place at .guardian/pr-walkthrough.config.json in the project root. All fields are optional — the skill runs generic phases with defaults and discloses what it skipped.",
+  "version": 1,
+
+  "_priorArtifacts": "Marker comments on the PR that the walkthrough ingests as INPUT to adjudicate, rather than re-deriving. Each is located by grepping issue comments for its marker string.",
+  "priorArtifacts": [
+    { "name": "audit", "marker": "<!-- pr-audit:v1 -->" }
+  ],
+
+  "_docDirs": "Where concept/pattern/practice docs live. Used to check whether a behavior change contradicts documented behavior, and to flag domains with no doc.",
+  "docDirs": ["docs"],
+
+  "_issueTracker": "Used when proposing that a finding be deferred to a ticket rather than fixed in the PR.",
+  "issueTracker": {
+    "type": "github",
+    "repo": null,
+    "projectPrefix": null,
+    "urlTemplate": null
+  },
+
+  "_notesPath": "Running review notes. Survives context compaction on long reviews. Defaults to the session scratchpad when null.",
+  "notesPath": null,
+
+  "_recordDestination": "Where to offer to file the finished review record. Null means don't offer.",
+  "recordDestination": null,
+
+  "_checklistsFile": "Stack-specific blind-spot checks, injected into Phase 1 (classification) and Phase 3 (per-slice bench).",
+  "checklistsFile": ".guardian/pr-walkthrough.checklists.md"
+}
