@@ -114,6 +114,15 @@ Two non-obvious constraints govern how the PreToolUse hook emits its decision. B
 
 2. **The hook MUST NOT call `process.exit()` — set `process.exitCode` and let it exit naturally.** Building pattern context loads onnxruntime-node (via the embeddings pipeline) on every function edit. Its native thread pool aborts the process with `mutex lock failed: Invalid argument` (SIGABRT / exit 134) if `process.exit()` forces synchronous teardown while those threads are alive. A non-zero exit is treated as a non-blocking error (see constraint 1's failure mode), so the deny is discarded. Natural exit lets node drain stdout and tear the thread pool down cleanly (onnxruntime threads do not hold the event loop, so there is no hang). Every exit path in `pre-edit-validation.ts` sets `process.exitCode` and returns — see the "Exit Discipline" comment block there.
 
+### Search Hint Hook (`search-hint.ts`)
+
+A **second, independent PreToolUse hook** (matcher `Grep|Glob|Bash|mcp__codebase-guardian__search*`, via `scripts/run-search-hint.sh`) that nudges Claude toward the semantic `search` MCP tool when it greps. It is separate from the `Edit|Write` validation hook and deliberately lightweight — it does **string parsing + small JSON state only**, never loading `better-sqlite3`/onnx, so it stays sub-10ms and can't affect validation. It emits a non-blocking reminder via `hookSpecificOutput.additionalContext` (`permissionDecision: "allow"`) — the verified mechanism for injecting model-visible context without blocking or re-prompting a tool.
+
+- **`helpers/search-detection.ts`** (pure): classifies a call as `semantic` / `grep-search` / `none`. The Bash branch parses pipeline stages to fire on real codebase searches (`rg`, `grep -r`, `git grep`, `find -name`, `fd`) but skip pipe filters (`ps | grep`), single-file greps, and non-search `find`.
+- **`helpers/search-hint-state.ts`**: per-session throttle in `${guardianHome}/.search-hint-state.json` (global, so the frequent path needs no git resolution). Nudge once, re-arm after `rearmAfter` (default 10) grep searches **without** a semantic search; a semantic search resets the counter. Keyed by session id → survives context compaction.
+- **`helpers/index-staleness.ts`**: on a nudge, uses the index db's mtime + `git log --since` over indexed globs to append a `rebuild_index` suggestion when ≥ `stalenessThreshold` (default 15) files have landed since the last build. `.dirty-files` is unused (nothing populates it), which is why staleness is computed from git, not that.
+- Gated: no nudge unless the cwd project has an index. Fail-open: any error → no output. Config knobs live under `searchHint` in `guardian.config.json`.
+
 ### Function Extractor (`function-extractor.ts`)
 
 Uses ts-morph AST parsing to find function declarations and their JSDoc. This handles all declaration patterns: `function foo()`, `const foo = () =>`, `const foo = function foo()`, `React.memo(function foo())`, class methods, object property methods, etc.

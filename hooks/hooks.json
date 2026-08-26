@@ -13,6 +13,12 @@
         "hooks": [
           { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\"" }
         ]
+      },
+      {
+        "matcher": "Grep|Glob|Bash|mcp__codebase-guardian__search|mcp__codebase-guardian__search_comments|mcp__codebase-guardian__search_doc_sections",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/run-search-hint.sh\"" }
+        ]
       }
     ]
   }
