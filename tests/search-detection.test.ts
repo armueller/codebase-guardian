@@ -61,9 +61,11 @@ describe('classifySearch — Bash non-searches (none)', () => {
     assert.equal(bash('grep foo package.json'), 'none');
     assert.equal(bash('grep TODO src/index.ts'), 'none');
   });
-  it('skips non-search find', () => {
+  it('skips non-search find, including a name predicate combined with an action', () => {
     assert.equal(bash('find . -type f -delete'), 'none');
     assert.equal(bash('find build -type d'), 'none');
+    assert.equal(bash("find . -name '*.tmp' -delete"), 'none');
+    assert.equal(bash("find . -name '*.log' -exec rm {} +"), 'none');
   });
   it('skips unrelated commands', () => {
     for (const c of ['echo hi', 'ls -R', 'npm test', 'cat foo.ts', 'git status']) {

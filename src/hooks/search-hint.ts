@@ -91,13 +91,19 @@ async function main(): Promise<void> {
     const config = resolveConfig(cwd);
     if (!config.searchHint.enabled) return;
 
-    if (!recordSearchEvent(sessionId, 'grep', config.searchHint.rearmAfter)) return;
-
-    // Only nudge toward `search` when the project actually has an index for it to query.
+    // Gate on the project having an index BEFORE consuming the throttle. Otherwise an un-indexed
+    // project's first grep marks the session "already nudged", and once an index is later built the
+    // next grep stays silent until the re-arm threshold — only an actually-nudgeable grep should count.
     if (!existsSync(config.databasePath)) return;
 
+    if (!recordSearchEvent(sessionId, 'grep', config.searchHint.rearmAfter)) return;
+
     let context = REMINDER;
-    const changed = countChangesSinceBuild(config.projectRoot, config.databasePath);
+    const changed = countChangesSinceBuild(config.projectRoot, config.databasePath, {
+      extensions: config.fileExtensions,
+      sourceDirectories: config.sourceDirectories,
+      docsDirectories: config.docsDirectories,
+    });
     if (changed >= config.searchHint.stalenessThreshold) {
       context += ` · ${changed} files have changed since the index was last built — run \`rebuild_index\` first for accurate results.`;
     }

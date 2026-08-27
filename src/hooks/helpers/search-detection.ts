@@ -31,6 +31,8 @@ const GREP_TOOLS = new Set(['grep', 'egrep', 'fgrep', 'zgrep']);
 const FIND_TOOLS = new Set(['find', 'gfind']);
 // `find` is a codebase search only when it searches by name/path.
 const FIND_NAME_PREDICATES = new Set(['-name', '-iname', '-path', '-ipath', '-regex', '-iregex', '-wholename', '-lname']);
+// …and only when it is not acting on the results (delete/exec/etc.), even if a name predicate is present.
+const FIND_ACTIONS = new Set(['-delete', '-exec', '-execdir', '-ok', '-okdir']);
 // Leading words/assignments that wrap the real command; skipped when finding the executable.
 const PREFIX_SKIP = new Set(['sudo', 'command', 'time', 'nice', 'env', 'builtin', 'exec']);
 
@@ -142,7 +144,11 @@ function stageIsSearch(exe: string, args: string[], pipedIntoThis: boolean): boo
     return false;
   }
 
-  if (FIND_TOOLS.has(exe)) return args.some(a => FIND_NAME_PREDICATES.has(a));
+  if (FIND_TOOLS.has(exe)) {
+    // A find that deletes/execs is acting on results, not searching — skip it even with a name predicate.
+    if (args.some(a => FIND_ACTIONS.has(a))) return false;
+    return args.some(a => FIND_NAME_PREDICATES.has(a));
+  }
 
   return false;
 }
