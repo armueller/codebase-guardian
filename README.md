@@ -272,6 +272,19 @@ The hook is designed to never permanently block work:
 - If any error occurs during validation → **allow** (fail-open)
 - If the edit is a duplicate resubmission after denial → **deny** instantly (cached, no AI call)
 
+## Search Hint
+
+A second, non-blocking `PreToolUse` hook nudges Claude toward the semantic `search` MCP tool when it searches the codebase with grep-family tools — the `Grep`/`Glob` tools **and** `rg`/`grep -r`/`git grep`/`find -name`/`fd`/etc. run through `Bash`. grep finds exact strings; `search` (hybrid FTS5 + embeddings) finds code by concept, which is what you want before writing something new (DRY).
+
+It never blocks or slows a search — it injects a one-line reminder via `additionalContext` and gets out of the way. To keep it from nagging:
+
+- **Throttled per session:** nudges on the first grep, then stays quiet until ~10 grep searches happen *without* a semantic search in between (keyed by session id, so it survives context compaction). Using `search` resets the counter.
+- **Intelligent Bash matching:** it fires on real codebase searches but skips pipe filters (`ps aux | grep node`), single-file greps, and non-search `find` (`find -delete`).
+- **Gated:** no nudge unless the project actually has an index for `search` to query.
+- **Rebuild reminder:** when many files have landed since the index was last built, the nudge also suggests `rebuild_index`.
+
+Tune or disable it per project via the `searchHint` block in `guardian.config.json` (`enabled`, `rearmAfter`, `stalenessThreshold`).
+
 ## JSDoc Standards
 
 Every exported function must have complete JSDoc with ALL of these tags:

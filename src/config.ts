@@ -44,6 +44,12 @@ export interface GuardianConfig {
     minTags: number;
     minCommentLength: number;
   };
+  /** Search-hint hook settings (nudge toward semantic search) */
+  searchHint: {
+    enabled: boolean;
+    rearmAfter: number;
+    stalenessThreshold: number;
+  };
 }
 
 /** Shape of guardian.config.json (all fields optional) */
@@ -56,6 +62,11 @@ interface GuardianConfigFile {
     requiredTags?: string[];
     minTags?: number;
     minCommentLength?: number;
+  };
+  searchHint?: {
+    enabled?: boolean;
+    rearmAfter?: number;
+    stalenessThreshold?: number;
   };
 }
 
@@ -72,6 +83,14 @@ const DEFAULT_JSDOC = {
   requiredTags: ['what', 'how', 'why', 'sideeffects', 'systemlayer', 'domain', 'tags'],
   minTags: 3,
   minCommentLength: 5,
+};
+
+// Search-hint hook defaults: nudge once, re-arm after 10 unheeded grep searches, and flag the
+// index as stale once 15+ files have changed since the last build.
+const DEFAULT_SEARCH_HINT = {
+  enabled: true,
+  rearmAfter: 10,
+  stalenessThreshold: 15,
 };
 
 // ─── Guardian Home ───────────────────────────────────────────────────────────
@@ -300,6 +319,11 @@ export function resolveConfig(fromPath?: string): GuardianConfig {
       requiredTags: configFile?.jsdoc?.requiredTags ?? DEFAULT_JSDOC.requiredTags,
       minTags: configFile?.jsdoc?.minTags ?? DEFAULT_JSDOC.minTags,
       minCommentLength: configFile?.jsdoc?.minCommentLength ?? DEFAULT_JSDOC.minCommentLength,
+    },
+    searchHint: {
+      enabled: configFile?.searchHint?.enabled ?? DEFAULT_SEARCH_HINT.enabled,
+      rearmAfter: configFile?.searchHint?.rearmAfter ?? DEFAULT_SEARCH_HINT.rearmAfter,
+      stalenessThreshold: configFile?.searchHint?.stalenessThreshold ?? DEFAULT_SEARCH_HINT.stalenessThreshold,
     },
   };
 

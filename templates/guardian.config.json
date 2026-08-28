@@ -9,5 +9,11 @@
     "requiredTags": ["what", "how", "why", "sideeffects", "systemlayer", "domain", "tags"],
     "minTags": 3,
     "minCommentLength": 5
+  },
+  "searchHint": {
+    "_comment": "Nudge Claude toward the semantic `search` tool when it greps. enabled: on/off; rearmAfter: grep searches without a semantic search before re-nudging; stalenessThreshold: changed files since last index build before suggesting a rebuild.",
+    "enabled": true,
+    "rearmAfter": 10,
+    "stalenessThreshold": 15
   }
 }
