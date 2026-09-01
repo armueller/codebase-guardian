@@ -1,6 +1,6 @@
 ---
 name: pr-walkthrough
-description: Helps a human review a PR efficiently — it does not review in their place. Pins the true before-state, quarantines mechanical churn from real behavior change, slices the diff into vertical behaviors, and walks the reviewer through each one with real code and full control flow, then drafts and posts the review they approve. Companion to pr-audit, not a replacement.
+description: Helps a human review a PR efficiently — it does not review in their place. Pins the true before-state, quarantines mechanical churn from real behavior change, slices the diff into vertical behaviors, and walks the reviewer through each one with the actual code and full control flow, restates the whole change in plain English to confirm they followed it, then drafts and posts the review they approve. Companion to pr-audit, not a replacement.
 allowed-tools: Bash, Read, Glob, Grep, Agent, WebFetch, AskUserQuestion, mcp__codebase-guardian__search, mcp__codebase-guardian__callers, mcp__codebase-guardian__callees, mcp__codebase-guardian__impact, mcp__codebase-guardian__search_doc_sections, mcp__codebase-guardian__search_comments, mcp__codebase-guardian__list_domains, mcp__codebase-guardian__list_tags, mcp__codebase-guardian__index_status
 ---
 
@@ -99,8 +99,8 @@ Each slice follows the same arc:
 
 1. **Before** — real code from the base revision, plus *why it was that way*. Quote enough to be self-contained.
 2. **The change** — the actual diff, annotated. Lead with the smallest thing that is the whole point (often one line).
-3. **Call chain down** — entry point → each hop with `file:line` → the pivot where behavior actually changes.
-4. **Back up** — what returns, what re-renders, what the user sees. Cover the branches, not just the happy path.
+3. **Call chain down.** Draw the schematic map first — entry point → each hop as `file:line` → the pivot, marked. Then **always show the pivot's actual code**, quoted from the ref (`git show "<ref>:<path>"`): the pivot is the whole reason for the slice, and a bare `file:line` makes the reviewer trust your narration instead of reading the eight lines that would let them see it for themselves. Keep the pointer for pass-through hops — **except** a hop that is *surprising or load-bearing* (a hidden invariant, a second consumer, a guard that has to hold): show its code too, with a one-line note on why it earns the space. Map for the plumbing; code for the parts that decide behavior.
+4. **Back up** — what returns, what re-renders, what the user sees. Cover the branches, not just the happy path, and show the code of any branch whose result the reviewer can't predict from its name.
 5. **What did not change but touches this** — callers outside the diff, sibling call sites, tests that should have moved.
 6. **The reviewer's bench** — positions, with confidence labels, on correctness, performance, architecture, and pattern consistency. Include **what you checked and found fine**, so an absence of findings is defensible rather than an absence of looking.
 7. **Adjudicate the prior artifacts that touch this slice** — corroborate, refute, or reclassify. Distinguish *real but inherited from the base branch* from *introduced here*; that distinction usually decides whether something blocks the merge.
@@ -111,12 +111,31 @@ Each slice follows the same arc:
 - **Concede quickly and without ceremony when they push back correctly.** Their domain knowledge routinely settles things the code cannot — whether an operation touches content, whether a UI state is reachable, whether a product direction is real. Fold it in and move on.
 - **Number your paragraphs** so the reviewer can reply with "27 yes, 29 no."
 - **Keep formatting simple.** Terminals mangle nested structures. Plain fenced code blocks, short tables, no deep nesting.
+- **Plain over dense — a load-bearing rule, not a style note.** The default failure mode here is expert-to-expert compression: long sentences that each carry three claims and make the reviewer do the unpacking. Density reads as expertise to the author and as work to the reader.
+  - **One claim per sentence.** If a sentence carries three, make it three sentences.
+  - **Define a domain term the first time you use it**, in a few plain words — then use it freely.
+  - **Write for a strong engineer who does not live in this subsystem** — not for someone who already knows it; they don't need the walkthrough.
+  - Concrete target — same claim, dense then plain:
+    - Dense: *"Two separate suffix-scoped topics is only a coherent design if the bucket notifications filter on the key suffix — which is also the only reason the base code doesn't already infinite-loop on its own write."*
+    - Plain: *"There are two SNS topics, one per filename suffix. That split only makes sense if the S3 bucket fires its notifications by suffix — and it does. That same suffix filter is also what keeps the existing code from looping on its own re-upload."*
 - **Verify before presenting.** If a subagent claimed it, check it. If you claimed it three messages ago and it now matters, check it again.
 - **Distinguish mechanism from confirmed defect.** If reachability depends on something you have not exercised, say exactly that and name what would settle it. Overclaiming once costs more than under-claiming ten times.
 
 ## Phase 4 — Cross-slice synthesis
 
 Once every slice is understood, ask what only the whole picture reveals: does the new abstraction earn its keep, is the migration complete, do the pieces agree with each other, what is on a hot path, and which decisions are load-bearing but undocumented.
+
+## Phase 4.5 — Plain-language recap (the comprehension check)
+
+Before you draft the review, restate the whole PR back to the reviewer in plain English. This is the teach-back, and it is for the reviewer's understanding, not the record — its job is to catch a mismatch between what they think they approved and what the code actually does, while there is still time to fix it.
+
+Not the analysis. Not the findings. **What the change *does*,** in terms a competent engineer who has never seen this code would follow:
+
+- **One short paragraph:** what the PR changes and why, plainly.
+- **One line per slice:** what it did, no jargon — "sniffs the file header to tell HEIC from AVIF, so each format goes to the converter that can actually decode it," *not* "widens the brand-list predicate at the pivot."
+- **The load-bearing assumptions, in plain words** — the handful of things that, if they turned out to be wrong, would break it.
+
+Frame it explicitly as a check, not a summary: **"Here's my understanding of this PR in plain terms — tell me where I've got it wrong."** Then wait. If they correct you, fold it in before drafting — a recap the reviewer had to correct means the review you were about to write would have been wrong too.
 
 ## Phase 5 — Draft, approve, post
 
@@ -137,7 +156,7 @@ Inline comments carry the evidence. The summary carries the ranking.
 
 ### Voice
 
-Write as the reviewer, with their judgment and your legwork. Precise, plain, direct, concise. Short sentences. No hedging where the claim is verified; explicit uncertainty where it is not. It does not need to pass as fully human-authored, but it must read as though the reviewer had a hand in authoring it — because they did.
+Write as the reviewer, with their judgment and your legwork. Precise, plain, direct, concise. Short sentences. No hedging where the claim is verified; explicit uncertainty where it is not. It does not need to pass as fully human-authored, but it must read as though the reviewer had a hand in authoring it — because they did. The **plain-over-dense** rule from Phase 3 applies here too — the review prose is where compression creeps back in.
 
 ### Posting mechanics — the parts that bite
 
