@@ -1,8 +1,8 @@
 # Codebase Guardian
 
-Semantic code index + automated validation hooks for TypeScript codebases. Install once, works on any project you open in Claude Code.
+Semantic code index + automated validation hooks for **TypeScript and Python** codebases. Install once, works on any project you open in Claude Code.
 
-Guardian indexes your codebase's functions, types, documentation, and call graph into a searchable SQLite database backed by FTS5 keyword search and vector embeddings. A PreToolUse hook validates every edit for code quality — DRY enforcement, JSDoc completeness, pattern consistency, and README compliance — using headless Claude with the full semantic index as context.
+Guardian indexes your codebase's functions, types, documentation, and call graph into a searchable SQLite database backed by FTS5 keyword search and vector embeddings. A PreToolUse hook validates every edit for code quality — DRY enforcement, documentation completeness (JSDoc for TypeScript, docstrings for Python), pattern consistency, and README compliance — using headless Claude with the full semantic index as context. Python is a fully supported second language, not TypeScript-with-a-different-extension: it has its own extractor, deterministic checks (`ruff` + `pydoclint`), and prompt, and never touches JSDoc or the TS tag convention.
 
 ## Why
 
@@ -77,7 +77,7 @@ In Claude Code:
 
 On the **first session after install**, the plugin builds its engine in the background: it installs ~550MB of native dependencies (`onnxruntime`, `better-sqlite3`) and compiles TypeScript into the plugin's data directory. This takes a few minutes and happens only once (and again after an update that changes dependencies). **Until it finishes, edits are allowed through unvalidated** — validation and the MCP tools activate automatically once the build completes.
 
-After that, the guardian is active on **every project** you open in Claude Code. No per-project setup needed. Skills are available as `/codebase-guardian:audit`, `/codebase-guardian:hook-audit`, and `/codebase-guardian:review-suggestions`.
+After that, the guardian is active on **every project** you open in Claude Code. No per-project setup needed. Skills are available as `/codebase-guardian:audit`, `/codebase-guardian:hook-audit`, `/codebase-guardian:review-suggestions`, `/codebase-guardian:pr-audit`, and `/codebase-guardian:pr-walkthrough`.
 
 ### Update
 
@@ -112,7 +112,7 @@ Earlier versions installed via `install.sh` — a user-level hook in `~/.claude/
 
 ### 1. Build the Index
 
-Open any TypeScript project in Claude Code and use the MCP tool:
+Open any TypeScript or Python project in Claude Code and use the MCP tool:
 
 ```
 Use the rebuild_index tool to build the code index
@@ -124,6 +124,8 @@ The index scans your source files and documentation in two phases:
 
 - **Phase 1:** Scans TypeScript files for JSDoc-annotated functions (Tier 1), and documentation files for structured docs (Tier 3). Generates vector embeddings for semantic search.
 - **Phase 2:** Uses the TypeScript compiler API to discover exported functions not covered by JSDoc (Tier 2) and extracts the call graph (who calls what).
+
+Python files are indexed alongside TypeScript via a stdlib-`ast` extractor (`guardian_py`): module/class/function definitions with docstrings and `Domain:`/`Tags:`/`Layer:` metadata, plus cross-file call edges (Jedi). Source and call-graph queries are language-scoped, so a TypeScript function never surfaces as "similar" to a Python edit and vice versa.
 
 ### 2. Make Edits
 
@@ -201,11 +203,12 @@ your-project/
 | `/audit` | Scan the codebase for JSDoc coverage — reports coverage %, per-directory breakdown, top gaps. Offers to generate JSDoc stubs. |
 | `/hook-audit` | Analyze validation hook performance — allow/deny/error rates, timing distributions, false positive detection. |
 | `/review-suggestions` | Review and apply accumulated non-blocking suggestions from `.guardian/suggestions.md`. |
-| `/pr-audit <PR#>` | Comprehensive pre-merge PR audit — Guardian-driven duplicate/impact/doc/pattern analysis plus your project's own checklists, run by a fresh subagent and posted as a marker comment. Tailor it per project — see [PR Audit Setup](#pr-audit-setup). |
+| `/pr-audit <PR#>` | Comprehensive pre-merge PR audit — Guardian-driven duplicate/impact/doc/pattern analysis plus your project's own checklists, run by a fresh subagent and posted as a marker comment. Language-agnostic (TypeScript + Python). Tailor it per project — see [PR Audit Setup](#pr-audit-setup). |
+| `/pr-walkthrough <PR#>` | A reviewer's companion (not a second audit): pins the true before-state, separates mechanical churn from real behavior change, slices the diff into vertical behaviors, and walks you through each one — then drafts and posts your review. See [PR Walkthrough Setup](#pr-walkthrough-setup). |
 
 ## Validation Hook
 
-The PreToolUse hook fires on every `Edit` and `Write` operation. It skips non-source files (markdown, JSON, config, test files, etc.) and validates TypeScript source changes.
+The PreToolUse hook fires on every `Edit` and `Write` operation. It skips non-source files (markdown, JSON, config, test files, etc.) and validates TypeScript and Python source changes — dispatching `.py` edits to a self-contained Python path (its own extractor, `ruff`/`pydoclint` checks, and prompt) and everything else to the TypeScript path.
 
 ### What It Checks (in priority order)
 
