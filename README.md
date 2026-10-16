@@ -77,7 +77,7 @@ In Claude Code:
 
 On the **first session after install**, the plugin builds its engine in the background: it installs ~550MB of native dependencies (`onnxruntime`, `better-sqlite3`) and compiles TypeScript into the plugin's data directory. This takes a few minutes and happens only once (and again after an update that changes dependencies). **Until it finishes, edits are allowed through unvalidated** — validation and the MCP tools activate automatically once the build completes.
 
-After that, the guardian is active on **every project** you open in Claude Code. No per-project setup needed. Skills are available as `/codebase-guardian:audit`, `/codebase-guardian:hook-audit`, `/codebase-guardian:review-suggestions`, `/codebase-guardian:pr-audit`, and `/codebase-guardian:pr-walkthrough`.
+After that, the guardian is active on **every project** you open in Claude Code. No per-project setup needed. Skills are available as `/codebase-guardian:audit`, `/codebase-guardian:hook-audit`, `/codebase-guardian:review-suggestions`, `/codebase-guardian:pr-audit`, `/codebase-guardian:pr-walkthrough`, and `/codebase-guardian:pr-tour`.
 
 ### Update
 
@@ -205,6 +205,7 @@ your-project/
 | `/review-suggestions` | Review and apply accumulated non-blocking suggestions from `.guardian/suggestions.md`. |
 | `/pr-audit <PR#>` | Comprehensive pre-merge PR audit — Guardian-driven duplicate/impact/doc/pattern analysis plus your project's own checklists, run by a fresh subagent and posted as a marker comment. Language-agnostic (TypeScript + Python). Tailor it per project — see [PR Audit Setup](#pr-audit-setup). |
 | `/pr-walkthrough <PR#>` | A reviewer's companion (not a second audit): pins the true before-state, separates mechanical churn from real behavior change, slices the diff into vertical behaviors, and walks you through each one — then drafts and posts your review. See [PR Walkthrough Setup](#pr-walkthrough-setup). |
+| `/pr-tour <PR#>` | Same analysis as /pr-walkthrough, delivered inside your own Neovim: before/after side by side in real files (full LSP on both), short notes pinned to lines, you navigate and ask questions in the Claude pane. See [PR Tour Setup](#pr-tour-setup). |
 
 ## Validation Hook
 
@@ -457,6 +458,30 @@ Both skills read an optional **`*.local.json`** beside the committed config, sha
 Both skills flag a personal-looking path found in a committed config, and neither guesses a destination when none is set.
 
 **Run it:** `/pr-walkthrough <PR#>`.
+
+### PR Tour Setup
+
+`/pr-tour <PR#>` runs the same analysis as `/pr-walkthrough` but walks you through each behavior **inside your own Neovim**. Claude checks out the PR head and the merge-base as two git worktrees, so the before pane and the after pane are both real files with go-to-definition, references and hover. Each behavior arrives as a tour of stops with short notes pinned to the lines they describe; you move with `]s` / `[s`, press `gK` for a stop's longer detail, and ask questions in the Claude pane — Claude reads where your cursor and selection are.
+
+**Requirements:** Neovim ≥ 0.10, `perl` (preinstalled on macOS and most Linux), and a terminal where you can put Claude and Neovim side by side (kitty, tmux, WezTerm, …).
+
+**Install the Neovim plugin** (it ships inside the Guardian plugin's built copy). With LazyVim, add `~/.config/nvim/lua/plugins/pr-tour.lua`:
+
+```lua
+return {
+  {
+    dir = vim.fn.expand("~/.claude/plugins/data/codebase-guardian-codebase-guardian/app/nvim"),
+    name = "pr-tour",
+    opts = {}, -- keys = { next = "]s", prev = "[s", more = "gK" }
+  },
+}
+```
+
+The path exists after your first Claude Code session with the plugin installed (the SessionStart bootstrap builds it). Highlights are overridable: `PrTourNote`, `PrTourFinding`, `PrTourFocus`.
+
+**Use it:** run `/pr-tour <PR#>` in Claude. When asked, open Neovim in the printed worktree path in a second pane. Claude attaches by itself (`scripts/pr-tour attach`).
+
+`]s` / `[s` replace spell-error navigation only inside the tour tab; everywhere else they keep their usual meaning. After Claude jumps you to a stop (a `goto`), the first `]s` / `[s` returns you to that current stop before moving on.
 
 ### Environment Variables
 

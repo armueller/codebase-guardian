@@ -36,7 +36,7 @@ if command -v rsync >/dev/null 2>&1; then
   rsync -a --delete --exclude node_modules --exclude dist --exclude .git "$ROOT"/ "$APP"/
 else
   # Fallback: refresh source files, keep node_modules/dist.
-  for item in src scripts skills hooks templates python requirements-python.txt package.json package-lock.json tsconfig.json .claude-plugin .mcp.json; do
+  for item in src scripts skills hooks templates python nvim requirements-python.txt package.json package-lock.json tsconfig.json .claude-plugin .mcp.json; do
     [ -e "$ROOT/$item" ] || continue
     rm -rf "$APP/$item"; cp -R "$ROOT/$item" "$APP/$item"
   done
