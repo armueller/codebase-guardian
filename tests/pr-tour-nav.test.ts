@@ -133,6 +133,15 @@ describe('pr-tour navigation and queries', { skip: !HAS_NVIM && 'nvim not on PAT
     assert.equal(where().stop, 5);
   });
 
+  it('jump into a diff pane opens the fold hiding the target line', () => {
+    const t = sampleTour(fx);
+    t.stops = [{ title: 'far', file: 'src/long.ts', view: 'split', line: 5, notes: [] }];
+    nv.api('load', `[==[${writeTour(fx.root, t)}]==]`);
+    nv.api('jump', `{ file = 'src/long.ts', line = 69 }`);
+    assert.equal(nv.lua<number>(`return vim.fn.foldclosed(69)`), -1);
+    assert.equal(layout(nv).wins.length, 2);
+  });
+
   it('jump rejects lines outside the file', () => {
     load();
     const r = nv.api('jump', `{ file = 'src/modified.ts', line = 99 }`);

@@ -158,7 +158,7 @@ function M.jump(args)
   vim.api.nvim_set_current_win(target)
   local count = vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(target))
   vim.api.nvim_win_set_cursor(target, { math.min(line, count), 0 })
-  vim.cmd("normal! zz")
+  vim.cmd("normal! zvzz")
   return { ok = true, side = side, file = args.file, line = line }
 end
 
