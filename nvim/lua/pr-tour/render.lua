@@ -97,7 +97,7 @@ end
 -- `only` relies on 'hidden' (Neovim's default) to keep modified buffers alive.
 local function reset_windows()
   vim.cmd("diffoff!")
-  vim.cmd("only")
+  vim.cmd("silent! only")
   return vim.api.nvim_get_current_win()
 end
 
@@ -176,6 +176,16 @@ local function place_note(buf, win, note)
   vim.api.nvim_buf_set_extmark(buf, M.ns, row, 0, opts)
 end
 
+--- Open any closed fold holding `row` in `win`. Diff mode folds unchanged
+--- regions away from hunks, and setting the cursor does not open them.
+local function reveal(win, row)
+  local count = vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(win))
+  row = math.max(1, math.min(row, count))
+  vim.api.nvim_win_call(win, function()
+    if vim.fn.foldclosed(row) ~= -1 then vim.cmd(row .. "foldopen!") end
+  end)
+end
+
 --- Render stop `index` of the loaded tour and put the cursor on its focus line.
 function M.show(index)
   local stop = state.tour.stops[index]
@@ -192,14 +202,18 @@ function M.show(index)
         vim.api.nvim_buf_set_extmark(buf, M.ns, row, 0, { line_hl_group = "PrTourFocus" })
       end
     end
+    reveal(win, stop.line)
     for _, note in ipairs(stop.notes) do
-      if note.side == side then place_note(buf, win, note) end
+      if note.side == side then
+        place_note(buf, win, note)
+        reveal(win, note.line)
+      end
     end
   end
   local win = state.wins[stop.focus]
   vim.api.nvim_set_current_win(win)
   vim.api.nvim_win_set_cursor(win, { stop.line, 0 })
-  vim.cmd("normal! zz")
+  vim.cmd("normal! zvzz")
   -- Truncated to the echo area: an overlong message raises a hit-enter prompt,
   -- which would block every later RPC call from the CLI.
   local msg = ("pr-tour %d/%d: %s"):format(index, #state.tour.stops, stop.title)

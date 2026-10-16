@@ -81,6 +81,21 @@ describe('pr-tour rendering', { skip: !HAS_NVIM && 'nvim not on PATH' }, () => {
     assert.deepEqual(s, { first: 'EDITED', modified: true });
   });
 
+  it('opens diff folds around a focus line and notes far from the hunk', () => {
+    const t = sampleTour(fx);
+    t.stops = [{ title: 'far', file: 'src/long.ts', view: 'split', line: 5,
+      notes: [
+        { side: 'head', line: 2, kind: 'explain', text: 'far head note' },
+        { side: 'base', line: 69, kind: 'explain', text: 'far base note' },
+      ] }];
+    load(t);
+    const closed = nv.lua<any>(`
+      local s = require('pr-tour.state')
+      local fc = function(side, row) return vim.api.nvim_win_call(s.wins[side], function() return vim.fn.foldclosed(row) end) end
+      return { focus = fc('head', 5), head = fc('head', 2), base = fc('base', 69), baseFocus = fc('base', 5), untouched = fc('head', 69) }`);
+    assert.deepEqual(closed, { focus: -1, head: -1, base: -1, baseFocus: -1, untouched: 68 });
+  });
+
   it('opens files whose names contain spaces', () => {
     const t = sampleTour(fx);
     t.stops = [{ title: 'space', file: 'src/with space.ts', view: 'head', line: 2, notes: [] }];

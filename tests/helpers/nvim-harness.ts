@@ -292,8 +292,9 @@ function git(cwd: string, ...args: string[]): string {
 
 /**
  * Repo with a base and a head commit covering every stop view (modified,
- * renamed, deleted, added, unchanged, and a filename with a space), checked
- * out as two detached worktrees.
+ * renamed, deleted, added, unchanged, and a filename with a space), plus
+ * src/long.ts whose only change (line 61 of 70) is far enough from its top
+ * that diff mode folds lines 1-54, checked out as two detached worktrees.
  *
  * @what Create the git fixture used by pr-tour tests
  * @how git init, two commits, then two detached worktrees (head/base)
@@ -330,6 +331,7 @@ export function makeFixture(): Fixture {
   w('src/deleted.ts', lines('d', 8));
   w('src/unchanged.ts', lines('u', 12));
   w('src/with space.ts', lines('s', 6));
+  w('src/long.ts', lines('l', 70));
   git(repo, 'add', '-A');
   git(repo, 'commit', '-q', '-m', 'base');
   const baseSha = git(repo, 'rev-parse', 'HEAD');
@@ -338,6 +340,7 @@ export function makeFixture(): Fixture {
   w('src/new-name.ts', lines('r', 11));
   git(repo, 'rm', '-q', 'src/deleted.ts');
   w('src/added.ts', lines('a', 4));
+  w('src/long.ts', lines('l', 70).replace('const l61 = 61;', 'const l61 = 6100;'));
   git(repo, 'add', '-A');
   git(repo, 'commit', '-q', '-m', 'head');
   const headSha = git(repo, 'rev-parse', 'HEAD');

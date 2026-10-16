@@ -41,6 +41,14 @@ describe('pr-tour navigation and queries', { skip: !HAS_NVIM && 'nvim not on PAT
     assert.equal(l.wins[0].diff, false);
   });
 
+  it('changing stops does not print "Already only one window"', () => {
+    load();
+    nv.keys(']s');
+    nv.keys(']s');
+    nv.keys(']s');
+    assert.doesNotMatch(nv.lua<string>(`return vim.fn.execute('messages')`), /Already only one window/);
+  });
+
   it('the stop keys do nothing to the tour outside the tour tab', () => {
     load();
     nv.lua(`vim.cmd('tabfirst') return true`);
