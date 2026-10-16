@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# pr-tour — the bridge Claude uses to drive a reviewer's Neovim during /pr-tour.
+#
+# Every subcommand prints exactly one JSON object on stdout and exits non-zero
+# on failure. It talks to Neovim over its RPC socket (nvim --server
+# --remote-expr) and calls the pr-tour Lua plugin, which does all rendering.
+#
+#   pr-tour attach <headRoot>              find the Neovim open in headRoot
+#   pr-tour load <tour.json>               render a tour; returns the validation report
+#   pr-tour where                          current stop, side, file, cursor, selection
+#   pr-tour goto <file> <line> [--before]  point at a head-side (or base-side) location
+#   pr-tour clear                          remove the tour from Neovim
+#
+# Env: PR_TOUR_NVIM_SOCKET (skip discovery), PR_TOUR_SOCKET_DIRS (colon-separated
+# dirs to search), PR_TOUR_STATE_DIR, PR_TOUR_TIMEOUT (seconds, default 5).
+# Must stay bash 3.2 compatible (macOS /bin/bash).
+set -u
+
+STATE_DIR="${PR_TOUR_STATE_DIR:-${TMPDIR:-/tmp}/pr-tour}"
+STATE_FILE="$STATE_DIR/attached"
+RPC_TIMEOUT="${PR_TOUR_TIMEOUT:-5}"
+MAX_SOCKET_PATH=103 # macOS sun_path is 104 bytes including the terminating NUL
+SOCK=""
+ROOT=""
+
+# Escape a string for use inside a JSON string literal.
+json_str() {
+  printf '%s' "$1" | tr -d '\r' |
+    sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e "s/$(printf '\t')/\\\\t/g" |
+    awk 'NR > 1 { printf "\\n" } { printf "%s", $0 }'
+}
+
+# fail <message> [extra JSON fields]: print the error object and exit 1.
+fail() {
+  printf '{"ok":false,"error":"%s"%s}\n' "$(json_str "$1")" "${2:+,$2}"
+  exit 1
+}
+
+# Quote a string as a Vimscript single-quoted literal.
+vim_str() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/''/g")"; }
+
+# rpc <socket> <vimscript-expr>: print the result. Status 142 means timed out.
+# stdin is /dev/null so nvim can't swallow a caller's here-doc.
+rpc() {
+  perl -e 'alarm shift; exec @ARGV' "$RPC_TIMEOUT" \
+    nvim --server "$1" --remote-expr "$2" </dev/null 2>/dev/null
+}
+
+resolve_dir() { (cd "$1" 2>/dev/null && pwd -P); }
+
+check_socket_path() {
+  if [ "${#1}" -gt "$MAX_SOCKET_PATH" ]; then
+    fail "socket path is ${#1} bytes; Unix sockets on macOS are limited to $MAX_SOCKET_PATH: $1"
+  fi
+}
+
+# Directories where Neovim creates its default server sockets.
+socket_dirs() {
+  if [ -n "${PR_TOUR_SOCKET_DIRS:-}" ]; then
+    printf '%s\n' "$PR_TOUR_SOCKET_DIRS" | tr ':' '\n'
+    return
+  fi
+  local user="${USER:-$(id -un)}"
+  printf '%s\n' "${TMPDIR:-/tmp}/nvim.$user" "/tmp/nvim.$user"
+  if [ -n "${XDG_RUNTIME_DIR:-}" ]; then printf '%s\n' "$XDG_RUNTIME_DIR"; fi
+}
+
+list_sockets() {
+  socket_dirs | while IFS= read -r d; do
+    [ -d "$d" ] || continue
+    find "$d" -maxdepth 2 -type s -name 'nvim*' 2>/dev/null
+  done | sort -u
+}
+
+save_state() {
+  mkdir -p "$STATE_DIR"
+  printf '%s\n%s\n' "$SOCK" "$ROOT" >"$STATE_FILE"
+}
+
+plugin_check() {
+  local loaded
+  loaded=$(rpc "$SOCK" "luaeval('(pcall(require, \"pr-tour\"))')") || fail "could not reach Neovim at $SOCK"
+  case "$loaded" in
+    true | v:true) ;;
+    *) fail "Neovim at $SOCK does not have the pr-tour plugin; add the LazyVim spec from the codebase-guardian README" ;;
+  esac
+}
+
+# discover <headRoot>: set SOCK to the one live Neovim whose cwd is inside headRoot.
+discover() {
+  local real_root sock cwd pid matches=0 found="" listing=""
+  real_root=$(resolve_dir "$1") || fail "headRoot does not exist: $1"
+  while IFS= read -r sock; do
+    [ -n "$sock" ] || continue
+    cwd=$(rpc "$sock" 'getcwd()') || continue
+    cwd=$(resolve_dir "$cwd") || continue
+    case "$cwd/" in "$real_root"/*) ;; *) continue ;; esac
+    pid=$(rpc "$sock" 'getpid()') || continue
+    matches=$((matches + 1))
+    found="$sock"
+    listing="$listing${listing:+,}{\"pid\":$pid,\"socket\":\"$(json_str "$sock")\",\"cwd\":\"$(json_str "$cwd")\"}"
+  done <<EOF
+$(list_sockets)
+EOF
+  if [ "$matches" -eq 0 ]; then
+    fail "no Neovim is open in $real_root. Open one there (cd '$real_root' && nvim) and re-run attach"
+  fi
+  if [ "$matches" -gt 1 ]; then
+    fail "$matches Neovim instances are open in $real_root; close the extras or set PR_TOUR_NVIM_SOCKET" "\"candidates\":[$listing]"
+  fi
+  SOCK="$found"
+  ROOT="$real_root"
+  plugin_check
+  save_state
+}
+
+# connect: set SOCK from the override or saved state; re-discover once if the
+# saved Neovim has gone away.
+connect() {
+  if [ -n "${PR_TOUR_NVIM_SOCKET:-}" ]; then
+    check_socket_path "$PR_TOUR_NVIM_SOCKET"
+    SOCK="$PR_TOUR_NVIM_SOCKET"
+    return
+  fi
+  [ -f "$STATE_FILE" ] || fail "not attached; run: pr-tour attach <headRoot>"
+  SOCK=$(sed -n 1p "$STATE_FILE")
+  ROOT=$(sed -n 2p "$STATE_FILE")
+  rpc "$SOCK" '1' >/dev/null
+  case $? in
+    0) return ;;
+    142) fail "Neovim did not respond within ${RPC_TIMEOUT}s — is it waiting at a prompt? Press Esc in Neovim and retry" ;;
+  esac
+  discover "$ROOT"
+}
+
+# call_lua <fn> <vimscript-arg>: print the plugin's JSON; exit by its "ok".
+call_lua() {
+  local out rc
+  out=$(rpc "$SOCK" "luaeval('require(\"pr-tour\").$1(_A)', $2)")
+  rc=$?
+  if [ "$rc" -eq 142 ]; then
+    fail "Neovim did not respond within ${RPC_TIMEOUT}s — is it waiting at a prompt? Press Esc in Neovim and retry"
+  fi
+  [ "$rc" -eq 0 ] || fail "pr-tour.$1 failed in Neovim at $SOCK"
+  printf '%s\n' "$out"
+  case "$out" in *'"ok":true'*) exit 0 ;; *) exit 1 ;; esac
+}
+
+cmd_attach() {
+  [ $# -eq 1 ] || fail "usage: pr-tour attach <headRoot>"
+  if [ -n "${PR_TOUR_NVIM_SOCKET:-}" ]; then
+    check_socket_path "$PR_TOUR_NVIM_SOCKET"
+    SOCK="$PR_TOUR_NVIM_SOCKET"
+    ROOT=$(resolve_dir "$1") || fail "headRoot does not exist: $1"
+    plugin_check
+    save_state
+  else
+    discover "$1"
+  fi
+  local pid
+  pid=$(rpc "$SOCK" 'getpid()')
+  printf '{"ok":true,"socket":"%s","headRoot":"%s","pid":%s}\n' \
+    "$(json_str "$SOCK")" "$(json_str "$ROOT")" "${pid:-null}"
+}
+
+cmd_load() {
+  [ $# -eq 1 ] || fail "usage: pr-tour load <tour.json>"
+  [ -f "$1" ] || fail "tour file not found: $1"
+  local abs
+  abs="$(resolve_dir "$(dirname "$1")")/$(basename "$1")"
+  connect
+  call_lua load "$(vim_str "$abs")"
+}
+
+cmd_where() {
+  [ $# -eq 0 ] || fail "usage: pr-tour where"
+  connect
+  call_lua where 0
+}
+
+cmd_goto() {
+  if [ $# -lt 2 ] || [ $# -gt 3 ]; then fail "usage: pr-tour goto <file> <line> [--before]"; fi
+  local before="v:false"
+  if [ $# -eq 3 ]; then
+    [ "$3" = "--before" ] || fail "usage: pr-tour goto <file> <line> [--before]"
+    before="v:true"
+  fi
+  case "$2" in '' | *[!0-9]*) fail "line must be a positive integer: $2" ;; esac
+  connect
+  call_lua jump "{'file': $(vim_str "$1"), 'line': $2, 'before': $before}"
+}
+
+cmd_clear() {
+  [ $# -eq 0 ] || fail "usage: pr-tour clear"
+  connect
+  call_lua clear 0
+}
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+  attach) cmd_attach "$@" ;;
+  load) cmd_load "$@" ;;
+  where) cmd_where "$@" ;;
+  goto) cmd_goto "$@" ;;
+  clear) cmd_clear "$@" ;;
+  *) fail "usage: pr-tour attach|load|where|goto|clear (see the header of $0)" ;;
+esac
