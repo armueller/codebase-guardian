@@ -44,3 +44,27 @@ describe('shared PR review core', () => {
     assert.deepEqual(shared, []);
   });
 });
+
+describe('pr-tour skill', () => {
+  const skill = read('pr-tour/SKILL.md');
+  const cliHeader = readFileSync(path.join(__dirname, '..', 'scripts', 'pr-tour'), 'utf8');
+
+  it('declares its name and loads the shared core', () => {
+    assert.match(skill, /^---\nname: pr-tour\n/);
+    assert.ok(skill.includes('../_shared/pr-review-core.md'));
+    assert.ok(skill.includes('../../scripts/pr-tour'));
+  });
+
+  it('uses every CLI subcommand, and the CLI documents each one', () => {
+    for (const sub of ['attach', 'load', 'where', 'goto', 'clear']) {
+      assert.ok(skill.includes(`$PRT ${sub}`), `skill never calls: ${sub}`);
+      assert.ok(cliHeader.includes(`#   pr-tour ${sub}`), `CLI header missing: ${sub}`);
+    }
+  });
+
+  it('documents the tour format fields the plugin validates', () => {
+    for (const field of ['"version": 1', '"headRoot"', '"baseRoot"', '"view"', '"baseFile"', '"endLine"', '"severity"', '"more"']) {
+      assert.ok(skill.includes(field), `skill tour schema missing ${field}`);
+    }
+  });
+});
