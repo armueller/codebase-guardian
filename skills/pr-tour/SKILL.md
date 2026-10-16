@@ -116,7 +116,7 @@ On the first tour only, add the keys: `]s` / `[s` move between stops, `gK` opens
 
 - On any question, run `$PRT where` **first**, and answer against their stop, side, file, line, and selection. If `selection` is non-null and its `ageSeconds` is small, "this" means the selection.
 - Answer short — a few sentences, same discipline as notes. Offer depth instead of delivering it unasked.
-- When pointing beats describing, run `$PRT goto <file> <line>` (add `--before` for the old code) and tell them `]s` returns to the tour.
+- When pointing beats describing, run `$PRT goto <file> <line>` (add `--before` for the old code) and tell them `]s` or `[s` returns them to the stop they were on.
 - If a question exposes a gap in the tour, add the stop or note and reload, instead of writing the answer out at length.
 - Concede quickly when they push back correctly (core rules).
 

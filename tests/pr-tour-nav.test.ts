@@ -103,7 +103,26 @@ describe('pr-tour navigation and queries', { skip: !HAS_NVIM && 'nvim not on PAT
     nv.keys(']s');
     l = layout(nv);
     assert.equal(l.wins.length, 2);
+    assert.equal(where().stop, 1);
+    nv.keys(']s');
     assert.equal(where().stop, 2);
+  });
+
+  it('[s after a jump re-shows the current stop', () => {
+    load();
+    nv.keys(']s');
+    nv.api('jump', `{ file = 'src/unchanged.ts', line = 4, before = true }`);
+    nv.keys('[s');
+    assert.equal(where().stop, 2);
+    assert.equal(layout(nv).wins.length, 2);
+  });
+
+  it('jump from the last stop is not stranded: ]s returns to it', () => {
+    load();
+    nv.lua(`require('pr-tour.render').show(#require('pr-tour.state').tour.stops) return true`);
+    nv.api('jump', `{ file = 'src/unchanged.ts', line = 4, before = true }`);
+    nv.keys(']s');
+    assert.equal(where().stop, 5);
   });
 
   it('jump rejects lines outside the file', () => {

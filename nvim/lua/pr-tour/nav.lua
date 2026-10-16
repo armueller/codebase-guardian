@@ -23,6 +23,10 @@ local function stepper(delta, lhs)
       pcall(vim.cmd.normal, { args = { vim.v.count1 .. vim.keycode(lhs) }, bang = true })
       return
     end
+    if state.away then
+      render.show(state.index)
+      return
+    end
     local target = math.max(1, math.min(#state.tour.stops, state.index + delta))
     if target == state.index then
       vim.api.nvim_echo({ { delta > 0 and "pr-tour: last stop" or "pr-tour: first stop", "WarningMsg" } }, false, {})
@@ -130,7 +134,8 @@ function M.where()
 end
 
 --- Point the reviewer at a location: reuse a tour window already showing the
---- file, else open it alone. The current stop is unchanged; ]s returns to it.
+--- file, else open it alone. The current stop is unchanged, but the reviewer is
+--- marked away from it: the next ]s or [s re-shows that stop instead of stepping.
 function M.jump(args)
   if not state.tour then return { ok = false, error = "no tour loaded" } end
   local side = args.before and "base" or "head"
@@ -142,6 +147,7 @@ function M.jump(args)
     return { ok = false, error = ("line %s is outside the %s file (%d lines)"):format(tostring(args.line), side, n) }
   end
   render.ensure_tab()
+  state.away = true
   local target
   for _, win in pairs(state.wins) do
     if vim.api.nvim_win_is_valid(win) and vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(win)) == path then

@@ -8,6 +8,7 @@ function M.reset()
   M.wins = {} -- side ("base"/"head") -> window showing it in the current layout
   M.decorated = {} -- buffer -> true for buffers holding pr-tour extmarks
   M.real_roots = {} -- side -> realpath of that worktree
+  M.away = false -- true after a jump moved the reviewer off the current stop
   M.last_visual = nil -- { buf, time } when visual mode was last left
 end
 

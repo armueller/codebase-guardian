@@ -180,6 +180,7 @@ end
 function M.show(index)
   local stop = state.tour.stops[index]
   state.index = index
+  state.away = false
   M.ensure_tab()
   if not layout_intact(stop) then build_layout(stop) end
   M.clear_marks()
