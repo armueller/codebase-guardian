@@ -122,11 +122,11 @@ On the first tour only, add the keys: `]s` / `[s` move between stops, `gL` opens
 
 ### 3e. When they say they are done with the slice
 
-Post a short numbered list, then wait:
+Post a short numbered list, then wait. Every finding carries its severity, a confidence label, and whether it is *introduced* by this PR or *inherited* from the base branch (core Phase 3 rules and step 7):
 
 ```
-1. [med] lock never released on throw — stop 3, route.ts:88
-2. [low] sniff() re-reads the header on every call — stop 2, sniff.ts:12
+1. [med · high confidence · introduced] lock never released on throw — stop 3, route.ts:88
+2. [low · medium confidence · inherited] sniff() re-reads the header on every call — stop 2, sniff.ts:12
 3. ✓ checked: all 4 callers handle the new stream return
 ```
 
@@ -149,3 +149,4 @@ Cross-slice synthesis, the plain-language recap, and draft / approve / post all 
 | `not attached` / Neovim gone and re-discovery failed | Ask the reviewer to reopen Neovim in `headRoot`, `$PRT attach`, then reload the current tour file — all tour state is in the file. |
 | `did not respond within Ns` | Neovim is probably waiting at a prompt. Ask them to press Esc in Neovim, then retry. |
 | `dropped` items on load | Fix the tour and reload. |
+| `no tour loaded` (e.g. Neovim restarted and the CLI re-discovered it silently) | Reload the current tour file with `$PRT load <tour.json>`. |

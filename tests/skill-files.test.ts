@@ -67,4 +67,20 @@ describe('pr-tour skill', () => {
       assert.ok(skill.includes(field), `skill tour schema missing ${field}`);
     }
   });
+
+  it('labels findings with confidence and introduced/inherited, as the core requires', () => {
+    assert.match(skill, /\[med · high confidence · introduced\]/);
+    assert.match(skill, /\[low · medium confidence · inherited\]/);
+  });
+
+  it('handles every plugin error the CLI can relay', () => {
+    assert.ok(skill.includes('`no tour loaded`'), 'error table missing: no tour loaded');
+  });
+
+  it('documents the default stop-detail key the plugin binds', () => {
+    const init = readFileSync(path.join(__dirname, '..', 'nvim', 'lua', 'pr-tour', 'init.lua'), 'utf8');
+    const more = init.match(/more = "([^"]+)"/)?.[1];
+    assert.ok(more, 'init.lua default more key not found');
+    assert.ok(skill.includes(`\`${more}\` opens a stop's detail`), `skill does not name the more key ${more}`);
+  });
 });
