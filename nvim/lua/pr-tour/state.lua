@@ -1,4 +1,4 @@
--- The single source of truth for the loaded tour. clear() resets it.
+-- The single source of truth for the loaded tour. reset() clears it.
 local M = {}
 
 function M.reset()
@@ -7,7 +7,9 @@ function M.reset()
   M.tab = nil -- tour tabpage handle
   M.wins = {} -- side ("base"/"head") -> window showing it in the current layout
   M.decorated = {} -- buffer -> true for buffers holding pr-tour extmarks
+  M.notes = {} -- buffer -> line -> { {label, hl, trimmed} } for the current stop's notes
   M.real_roots = {} -- side -> realpath of that worktree
+  M.shown_at = nil -- "win:line" where the last show() put the cursor
   M.away = false -- true after a jump moved the reviewer off the current stop
   M.last_visual = nil -- { buf, time } when visual mode was last left
 end

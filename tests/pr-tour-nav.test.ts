@@ -64,6 +64,65 @@ describe('pr-tour navigation and queries', { skip: !HAS_NVIM && 'nvim not on PAT
     assert.equal(floats(), 1);
   });
 
+  /**
+   * Lines of the pr-tour detail float, or [] when none is open.
+   * @returns the float buffer's lines; nv.lua encodes an empty Lua table as {}, so it is normalized here
+   */
+  const floatLines = (): string[] => {
+    const r = nv.lua<string[] | Record<string, never>>(`for _, w in ipairs(vim.api.nvim_list_wins()) do if vim.api.nvim_win_get_config(w).relative ~= '' and vim.w[w]['pr-tour-more'] then return vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(w), 0, -1, false) end end return {}`);
+    return Array.isArray(r) ? r : [];
+  };
+  const long = 'word '.repeat(60).trim();
+  /**
+   * Load a one-stop split tour on src/modified.ts:6 with the given head-side notes.
+   * @param notes - head-side notes as [line, text] pairs
+   */
+  const loadSplit = (notes: Array<[number, string]>) => {
+    const t = sampleTour(fx);
+    t.stops = [{ title: 'split', file: 'src/modified.ts', view: 'split', line: 6,
+      notes: notes.map(([line, text]) => ({ side: 'head', line, kind: 'explain', text })) }];
+    nv.api('load', `[==[${writeTour(fx.root, t)}]==]`);
+  };
+
+  it('gL on a note line shows the full note, then the stop detail', () => {
+    load();
+    nv.keys('gL');
+    const text = floatLines().join('\n');
+    assert.ok(text.includes('◀ new line inserted'), text);
+    assert.ok(text.includes('Longer detail.'), text);
+    assert.ok(text.indexOf('new line inserted') < text.indexOf('Longer detail.'), text);
+  });
+
+  it('gL shows a trimmed note in full', () => {
+    loadSplit([[6, long]]);
+    nv.keys('gL');
+    assert.ok(floatLines().join(' ').replace(/\s+/g, ' ').includes(long), floatLines().join('\n'));
+  });
+
+  it('moving onto a trimmed note line echoes the full note; other lines echo nothing', () => {
+    loadSplit([[6, long], [8, 'short']]);
+    assert.equal(nv.lua(`return require('pr-tour.nav').echo_note() or vim.NIL`), `◀ ${long}`);
+    nv.keys('2j');
+    assert.equal(nv.lua(`return require('pr-tour.nav').echo_note() or vim.NIL`), null, 'untrimmed notes are already readable');
+  });
+
+  it('the cursor echo fires on CursorMoved, and again after leaving and returning to the focus line', () => {
+    loadSplit([[6, long]]);
+    const spy = `local nav = require('pr-tour.nav') _G.prt_echoes = 0 local orig = nav.echo_note nav.echo_note = function() local r = orig() if r then _G.prt_echoes = _G.prt_echoes + 1 end return r end return true`;
+    nv.lua(spy);
+    nv.keys('j');
+    nv.keys('k');
+    assert.equal(nv.lua(`return _G.prt_echoes`), 1, 'returning to the trimmed focus line echoes it');
+  });
+
+  it('gL with no note on the line and no stop detail opens no float', () => {
+    load();
+    nv.keys(']s]s');
+    nv.keys('gg');
+    nv.keys('gL');
+    assert.deepEqual(floatLines(), []);
+  });
+
   it('where reports stop, side, file and cursor', () => {
     load();
     assert.deepEqual(where(), {

@@ -36,18 +36,55 @@ local function stepper(delta, lhs)
   end
 end
 
+--- The current stop's notes on the cursor line, in full.
+local function notes_here()
+  local buf = vim.api.nvim_get_current_buf()
+  local line = vim.api.nvim_win_get_cursor(0)[1]
+  return (state.notes[buf] or {})[line] or {}
+end
+
+--- The detail float: the cursor line's notes in full, then the stop's `more`.
 local function show_more()
   if not (state.tour and in_tour_tab()) then return end
   local stop = state.tour.stops[state.index]
-  if not stop.more then
-    vim.api.nvim_echo({ { "pr-tour: no detail for this stop" } }, false, {})
+  local lines = {}
+  for _, n in ipairs(notes_here()) do lines[#lines + 1] = n.label end
+  if stop.more then
+    if #lines > 0 then vim.list_extend(lines, { "", "---", "" }) end
+    vim.list_extend(lines, vim.split(stop.more, "\n"))
+  end
+  if #lines == 0 then
+    vim.api.nvim_echo({ { "pr-tour: no note on this line and no detail for this stop" } }, false, {})
     return
   end
-  vim.lsp.util.open_floating_preview(vim.split(stop.more, "\n"), "markdown", {
+  local _, win = vim.lsp.util.open_floating_preview(lines, "markdown", {
     border = "rounded",
     max_width = 80,
+    wrap = true,
     focus_id = "pr-tour-more",
   })
+  vim.w[win]["pr-tour-more"] = true
+end
+
+local echoed = false -- whether the last cursor echo showed a note
+
+--- Echo the cursor line's notes in full when any of them is trimmed on screen.
+--- Returns the full text, or nil when there is nothing trimmed here.
+function M.echo_note()
+  if not (state.tour and in_tour_tab()) then return nil end
+  local here, trimmed = notes_here(), false
+  for _, n in ipairs(here) do trimmed = trimmed or n.trimmed end
+  if not trimmed then
+    if echoed then vim.api.nvim_echo({ { "" } }, false, {}) end
+    echoed = false
+    return nil
+  end
+  local parts = {}
+  for _, n in ipairs(here) do parts[#parts + 1] = n.label end
+  local text = table.concat(parts, "   ")
+  vim.api.nvim_echo({ { render.fit(text, math.max(vim.v.echospace - 1, 10)), here[1].hl } }, false, {})
+  echoed = true
+  return text
 end
 
 --- The reviewer's global normal-mode mapping for `lhs`, or false. Not maparg:
@@ -70,6 +107,19 @@ function M.attach(keys)
     pattern = "[vV\22]*:[^vV\22]*",
     callback = function()
       state.last_visual = { buf = vim.api.nvim_get_current_buf(), time = os.time() }
+    end,
+  })
+  local last_line = nil
+  vim.api.nvim_create_autocmd("CursorMoved", {
+    group = augroup,
+    callback = function()
+      local key = vim.api.nvim_get_current_win() .. ":" .. vim.api.nvim_win_get_cursor(0)[1]
+      if key == last_line then return end
+      last_line = key
+      -- Landing on a stop keeps its title in the echo area once; the note shows on any later visit or via gL.
+      local landing = key == state.shown_at
+      state.shown_at = nil
+      if not landing then M.echo_note() end
     end,
   })
   local maps = {

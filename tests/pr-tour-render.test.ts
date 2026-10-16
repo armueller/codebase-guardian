@@ -120,6 +120,34 @@ describe('pr-tour rendering', { skip: !HAS_NVIM && 'nvim not on PATH' }, () => {
     assert.ok(note, 'expected a virt_lines note');
   });
 
+  it('trims a long note at end of line on a split stop instead of adding virtual lines', () => {
+    const t = sampleTour(fx);
+    t.stops = [{ title: 'split', file: 'src/modified.ts', view: 'split', line: 6,
+      notes: [{ side: 'head', line: 6, kind: 'explain', text: 'word '.repeat(60).trim() }] }];
+    load(t);
+    const note = marks(nv, head('src/modified.ts')).find((m) => m.row === 5 && m.line_hl === '');
+    assert.ok(note, 'expected the note mark');
+    assert.equal(note.virt_lines, 0, 'virtual lines would push the diff panes out of line');
+    assert.ok(note.text.startsWith('◀ word word') && note.text.endsWith('…'), note.text);
+    const fits = nv.lua<boolean>(
+      `local w = require('pr-tour.state').wins.head local info = vim.fn.getwininfo(w)[1] ` +
+      `local line = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(w), 5, 6, false)[1] ` +
+      `return vim.fn.strdisplaywidth(line) + 2 + vim.fn.strdisplaywidth(${JSON.stringify(note.text)}) <= info.width - info.textoff`);
+    assert.ok(fits, 'trimmed note must fit in the space left on the line');
+  });
+
+  it('re-trims split-stop notes when the editor is resized', () => {
+    const t = sampleTour(fx);
+    t.stops = [{ title: 'split', file: 'src/modified.ts', view: 'split', line: 6,
+      notes: [{ side: 'head', line: 6, kind: 'explain', text: 'word '.repeat(60).trim() }] }];
+    load(t);
+    const before = marks(nv, head('src/modified.ts')).find((m) => m.row === 5 && m.line_hl === '')!.text;
+    nv.lua(`vim.o.columns = 120 vim.cmd('wincmd =') vim.api.nvim_exec_autocmds('VimResized', {}) return true`);
+    const after = marks(nv, head('src/modified.ts')).find((m) => m.row === 5 && m.line_hl === '')!.text;
+    assert.ok(after.length < before.length, `${after.length} should be < ${before.length}`);
+    assert.ok(after.endsWith('…'));
+  });
+
   it('opens a file that has a swap file instead of prompting', () => {
     const other = startNvim(fx.headRoot, { swap: true });
     const swapped = startNvim(fx.headRoot, { swap: true });

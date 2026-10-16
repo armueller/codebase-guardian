@@ -22,6 +22,12 @@ function M.start()
     group = augroup,
     callback = function(ev) M.lock_if_base(ev.buf) end,
   })
+  -- Split-stop notes are trimmed to the space left on their line, so re-fit them
+  -- when the panes change width.
+  vim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, {
+    group = augroup,
+    callback = function() M.redecorate() end,
+  })
 end
 
 --- End a tour's rendering: remove every pin and the lock autocmd.
@@ -38,6 +44,7 @@ function M.clear_marks()
     if vim.api.nvim_buf_is_valid(buf) then vim.api.nvim_buf_clear_namespace(buf, M.ns, 0, -1) end
   end
   state.decorated = {}
+  state.notes = {}
 end
 
 --- Switch to the tour tab, creating it when missing.
@@ -143,6 +150,20 @@ local function wrap(text, width)
   return out
 end
 
+--- `text` cut to at most `width` display cells, ending in "…" when cut.
+--- Counts characters, not bytes, so multibyte text is never split mid-character.
+function M.fit(text, width)
+  if vim.fn.strdisplaywidth(text) <= width then return text end
+  local out, used = "", 0
+  for i = 0, vim.fn.strcharlen(text) - 1 do
+    local ch = vim.fn.strcharpart(text, i, 1)
+    local w = vim.fn.strdisplaywidth(ch)
+    if used + w > width - 1 then break end
+    out, used = out .. ch, used + w
+  end
+  return out .. "…"
+end
+
 local function note_label(note)
   if note.kind == "finding" then
     return ("◆ [%s] %s"):format(note.severity, note.text), "PrTourFinding"
@@ -150,18 +171,27 @@ local function note_label(note)
   return "◀ " .. note.text, "PrTourNote"
 end
 
---- Pin a note at end of line, or on wrapped virtual lines below when it is wider
---- than the space left in the window.
-local function place_note(buf, win, note)
+-- Narrowest a trimmed note gets, even when the line leaves less room.
+local MIN_TRIMMED = 12
+
+--- Pin a note at end of line. When it is wider than the space left: on a split
+--- stop it is trimmed with "…" (virtual lines would shift one diff pane against
+--- the other); elsewhere it wraps onto virtual lines below. Every note is
+--- recorded in state.notes so gL and the cursor echo can show it in full.
+local function place_note(buf, win, note, trim)
   local label, hl = note_label(note)
   local row = note.line - 1
   local info = vim.fn.getwininfo(win)[1]
   local text_width = info.width - info.textoff
   local line_text = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1] or ""
   local room = text_width - vim.fn.strdisplaywidth(line_text) - 2
+  local fits = vim.fn.strdisplaywidth(label) <= room
+  state.notes[buf] = state.notes[buf] or {}
+  state.notes[buf][note.line] = state.notes[buf][note.line] or {}
+  table.insert(state.notes[buf][note.line], { label = label, hl = hl, trimmed = trim and not fits })
   local opts = {}
-  if vim.fn.strdisplaywidth(label) <= room then
-    opts.virt_text = { { label, hl } }
+  if fits or trim then
+    opts.virt_text = { { fits and label or M.fit(label, math.max(room, MIN_TRIMMED)), hl } }
     opts.virt_text_pos = "eol"
   else
     opts.virt_lines = {}
@@ -186,13 +216,8 @@ local function reveal(win, row)
   end)
 end
 
---- Render stop `index` of the loaded tour and put the cursor on its focus line.
-function M.show(index)
-  local stop = state.tour.stops[index]
-  state.index = index
-  state.away = false
-  M.ensure_tab()
-  if not layout_intact(stop) then build_layout(stop) end
+--- Draw the focus range and notes for `stop` into the current layout.
+local function decorate(stop)
   M.clear_marks()
   for side, win in pairs(state.wins) do
     local buf = vim.api.nvim_win_get_buf(win)
@@ -205,19 +230,37 @@ function M.show(index)
     reveal(win, stop.line)
     for _, note in ipairs(stop.notes) do
       if note.side == side then
-        place_note(buf, win, note)
+        place_note(buf, win, note, stop.view == "split")
         reveal(win, note.line)
       end
     end
   end
+end
+
+--- Re-draw the current stop's pins without moving the cursor (after a resize).
+function M.redecorate()
+  if not (state.tour and state.index > 0) or state.away then return end
+  local stop = state.tour.stops[state.index]
+  if layout_intact(stop) then decorate(stop) end
+end
+
+--- Render stop `index` of the loaded tour and put the cursor on its focus line.
+function M.show(index)
+  local stop = state.tour.stops[index]
+  state.index = index
+  state.away = false
+  M.ensure_tab()
+  if not layout_intact(stop) then build_layout(stop) end
+  decorate(stop)
   local win = state.wins[stop.focus]
   vim.api.nvim_set_current_win(win)
   vim.api.nvim_win_set_cursor(win, { stop.line, 0 })
   vim.cmd("normal! zvzz")
+  state.shown_at = win .. ":" .. stop.line
   -- Truncated to the echo area: an overlong message raises a hit-enter prompt,
   -- which would block every later RPC call from the CLI.
   local msg = ("pr-tour %d/%d: %s"):format(index, #state.tour.stops, stop.title)
-  vim.api.nvim_echo({ { msg:sub(1, math.max(vim.v.echospace - 1, 10)) } }, false, {})
+  vim.api.nvim_echo({ { M.fit(msg, math.max(vim.v.echospace - 1, 10)) } }, false, {})
 end
 
 return M
