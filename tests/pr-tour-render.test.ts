@@ -94,4 +94,28 @@ describe('pr-tour rendering', { skip: !HAS_NVIM && 'nvim not on PATH' }, () => {
     assert.equal(r.error, 'unsupported tour version: 9');
     assert.equal(layout(nv).tabs, 1);
   });
+
+  it('wraps a short note onto virtual lines when the line leaves too little room', () => {
+    const t = sampleTour(fx);
+    t.stops = [{ title: 'room', file: 'src/modified.ts', view: 'head', line: 6,
+      notes: [{ side: 'head', line: 6, kind: 'explain', text: 'x'.repeat(190) }] }];
+    nv.lua(`vim.o.columns = 200 return true`);
+    load(t);
+    const note = marks(nv, head('src/modified.ts')).find((m) => m.virt_lines > 0);
+    assert.ok(note, 'expected a virt_lines note');
+  });
+
+  it('opens a file that has a swap file instead of prompting', () => {
+    const other = startNvim(fx.headRoot, { swap: true });
+    const swapped = startNvim(fx.headRoot, { swap: true });
+    try {
+      other.lua(`vim.cmd('edit ' .. vim.fn.fnameescape([==[${head('src/modified.ts')}]==])) return true`);
+      const r = swapped.api('load', `[==[${writeTour(fx.root, sampleTour(fx))}]==]`);
+      assert.equal(r.ok, true, JSON.stringify(r));
+      assert.equal(layout(swapped).wins.length, 2);
+    } finally {
+      other.stop();
+      swapped.stop();
+    }
+  });
 });

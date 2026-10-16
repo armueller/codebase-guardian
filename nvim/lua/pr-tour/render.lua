@@ -51,11 +51,21 @@ function M.ensure_tab()
   state.wins = {}
 end
 
---- Show `path` in `win`. bufload never reloads an already-loaded buffer, so the
+--- Show `path` in `win`. An already-loaded buffer is never reloaded (plain bufload skips SwapExists, so an unloaded one is read with :edit), so the
 --- reviewer's unsaved changes survive.
 local function open_in(win, path)
   local buf = vim.fn.bufadd(path)
-  vim.fn.bufload(buf)
+  local swap_group = vim.api.nvim_create_augroup("pr-tour-swap", { clear = true })
+  vim.api.nvim_create_autocmd("SwapExists", {
+    group = swap_group,
+    callback = function() vim.v.swapchoice = "o" end,
+  })
+  local ok, err = true, nil
+  if not vim.api.nvim_buf_is_loaded(buf) then
+    ok, err = pcall(vim.api.nvim_buf_call, buf, function() vim.cmd("silent edit") end)
+  end
+  pcall(vim.api.nvim_del_augroup_by_id, swap_group)
+  if not ok then error(err, 0) end
   vim.bo[buf].buflisted = true
   vim.api.nvim_win_set_buf(win, buf)
   if vim.bo[buf].filetype == "" then
@@ -141,13 +151,14 @@ local function note_label(note)
 end
 
 --- Pin a note at end of line, or on wrapped virtual lines below when it is wider
---- than the window itself (a short note may wrap on screen after a long line).
+--- than the space left in the window.
 local function place_note(buf, win, note)
   local label, hl = note_label(note)
   local row = note.line - 1
   local info = vim.fn.getwininfo(win)[1]
   local text_width = info.width - info.textoff
-  local room = text_width - 4
+  local line_text = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1] or ""
+  local room = text_width - vim.fn.strdisplaywidth(line_text) - 2
   local opts = {}
   if vim.fn.strdisplaywidth(label) <= room then
     opts.virt_text = { { label, hl } }

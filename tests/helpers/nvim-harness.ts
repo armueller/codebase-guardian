@@ -126,18 +126,19 @@ export interface Nvim {
  * @how Spawns `nvim --headless --clean --listen`, adds the repo's nvim/ dir to rtp, polls until the socket answers
  * @why Unix socket paths are limited to ~103 bytes, so the socket lives in a mkdtemp dir
  * @param {string} cwd - Working directory for Neovim
- * @param {{sockDir?: string, plugin?: boolean}} opts - Socket dir override; plugin=false skips adding the plugin to rtp
+ * @param {{sockDir?: string, plugin?: boolean, swap?: boolean}} opts - Socket dir override; plugin=false skips adding the plugin to rtp; swap=true keeps swapfiles on (default is -n); the window is 200 columns wide
  * @returns {Nvim} Handle to the running instance
  * @sideeffects Creates a temp dir, spawns a Neovim process, blocks up to 5s waiting for the socket
  * @systemlayer Utility
  * @domain testing, neovim
  * @tags neovim, process, test-harness
  */
-export function startNvim(cwd: string, opts: { sockDir?: string; plugin?: boolean } = {}): Nvim {
+export function startNvim(cwd: string, opts: { sockDir?: string; plugin?: boolean; swap?: boolean } = {}): Nvim {
   const dir = opts.sockDir ?? mkdtempSync(path.join(tmpdir(), 'prt-'));
   mkdirSync(dir, { recursive: true });
   const sock = path.join(dir, `nvim.${process.pid}.${Math.random().toString(36).slice(2, 8)}`);
-  const args = ['--headless', '--clean', '-n', '--listen', sock];
+  const args = ['--headless', '--clean', '--cmd', 'set columns=200', '--listen', sock];
+  if (!opts.swap) args.push('-n');
   if (opts.plugin !== false) args.push('--cmd', `set rtp+=${path.join(REPO, 'nvim')}`);
   const proc = spawn('nvim', args, { cwd, stdio: 'ignore' });
   const deadline = Date.now() + 5000;
