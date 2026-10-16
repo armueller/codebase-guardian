@@ -87,12 +87,20 @@ plugin_check() {
 }
 
 # discover <headRoot>: set SOCK to the one live Neovim whose cwd is inside headRoot.
+# Sockets whose cwd query times out are counted, so a Neovim stuck at a prompt
+# is reported as unresponsive rather than as missing.
 discover() {
-  local real_root sock cwd pid matches=0 found="" listing=""
+  local real_root sock cwd pid rc matches=0 unresponsive=0 found="" listing=""
   real_root=$(resolve_dir "$1") || fail "headRoot does not exist: $1"
   while IFS= read -r sock; do
     [ -n "$sock" ] || continue
-    cwd=$(rpc "$sock" 'getcwd()') || continue
+    cwd=$(rpc "$sock" 'getcwd()')
+    rc=$?
+    if [ "$rc" -eq 142 ]; then
+      unresponsive=$((unresponsive + 1))
+      continue
+    fi
+    [ "$rc" -eq 0 ] || continue
     cwd=$(resolve_dir "$cwd") || continue
     case "$cwd/" in "$real_root"/*) ;; *) continue ;; esac
     pid=$(rpc "$sock" 'getpid()') || continue
@@ -102,6 +110,9 @@ discover() {
   done <<EOF
 $(list_sockets)
 EOF
+  if [ "$matches" -eq 0 ] && [ "$unresponsive" -gt 0 ]; then
+    fail "$unresponsive Neovim instance(s) did not respond within ${RPC_TIMEOUT}s — one may be waiting at a prompt; press Esc in Neovim and retry"
+  fi
   if [ "$matches" -eq 0 ]; then
     fail "no Neovim is open in $real_root. Open one there (cd '$real_root' && nvim) and re-run attach"
   fi

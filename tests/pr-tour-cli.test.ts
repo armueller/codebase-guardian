@@ -139,6 +139,17 @@ describe('pr-tour CLI', { skip: !HAS_NVIM && 'nvim not on PATH' }, () => {
     assert.match(r.json.error, /did not respond within 1s/);
   });
 
+  it('attach blames an unresponsive Neovim instead of saying none is open', () => {
+    const { env, spawnIn } = setup();
+    const h = spawnIn(fx.headRoot);
+    spawnIn(fx.baseRoot);
+    rpc(h.sock, `luaeval('vim.defer_fn(function() vim.uv.sleep(4000) end, 50)')`);
+    sleep(200);
+    const r = cli(['attach', fx.headRoot], { ...env, PR_TOUR_TIMEOUT: '1' });
+    assert.equal(r.status, 1, r.stdout);
+    assert.match(r.json.error, /^1 Neovim instance\(s\) did not respond within 1s .*waiting at a prompt; press Esc in Neovim and retry/);
+  });
+
   it('rejects an override socket path over the macOS limit', () => {
     const { env } = setup();
     const r = cli(['attach', fx.headRoot], { ...env, PR_TOUR_NVIM_SOCKET: `/tmp/${'x'.repeat(120)}` });
