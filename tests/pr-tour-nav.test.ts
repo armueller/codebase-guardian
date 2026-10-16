@@ -56,11 +56,11 @@ describe('pr-tour navigation and queries', { skip: !HAS_NVIM && 'nvim not on PAT
     assert.equal(nv.lua(`return require('pr-tour.state').index`), 1);
   });
 
-  it('gK opens the stop detail in a float', () => {
+  it('gL opens the stop detail in a float', () => {
     load();
     const floats = () => nv.lua<number>(`local n = 0 for _, w in ipairs(vim.api.nvim_list_wins()) do if vim.api.nvim_win_get_config(w).relative ~= '' then n = n + 1 end end return n`);
     assert.equal(floats(), 0);
-    nv.keys('gK');
+    nv.keys('gL');
     assert.equal(floats(), 1);
   });
 

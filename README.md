@@ -461,7 +461,7 @@ Both skills flag a personal-looking path found in a committed config, and neithe
 
 ### PR Tour Setup
 
-`/pr-tour <PR#>` runs the same analysis as `/pr-walkthrough` but walks you through each behavior **inside your own Neovim**. Claude checks out the PR head and the merge-base as two git worktrees, so the before pane and the after pane are both real files with go-to-definition, references and hover. Each behavior arrives as a tour of stops with short notes pinned to the lines they describe; you move with `]s` / `[s`, press `gK` for a stop's longer detail, and ask questions in the Claude pane — Claude reads where your cursor and selection are.
+`/pr-tour <PR#>` runs the same analysis as `/pr-walkthrough` but walks you through each behavior **inside your own Neovim**. Claude checks out the PR head and the merge-base as two git worktrees, so the before pane and the after pane are both real files with go-to-definition, references and hover. Each behavior arrives as a tour of stops with short notes pinned to the lines they describe; you move with `]s` / `[s`, press `gL` for a stop's longer detail, and ask questions in the Claude pane — Claude reads where your cursor and selection are.
 
 **Requirements:** Neovim ≥ 0.10, `perl` (preinstalled on macOS and most Linux), and a terminal where you can put Claude and Neovim side by side (kitty, tmux, WezTerm, …).
 
@@ -472,7 +472,7 @@ return {
   {
     dir = vim.fn.expand("~/.claude/plugins/data/codebase-guardian-codebase-guardian/app/nvim"),
     name = "pr-tour",
-    opts = {}, -- keys = { next = "]s", prev = "[s", more = "gK" }
+    opts = {}, -- keys = { next = "]s", prev = "[s", more = "gL" }
   },
 }
 ```
@@ -482,6 +482,8 @@ The path exists after your first Claude Code session with the plugin installed (
 **Use it:** run `/pr-tour <PR#>` in Claude. When asked, open Neovim in the printed worktree path in a second pane. Claude attaches by itself (`scripts/pr-tour attach`).
 
 `]s` / `[s` replace spell-error navigation only inside the tour tab; everywhere else they keep their usual meaning. After Claude jumps you to a stop (a `goto`), the first `]s` / `[s` returns you to that current stop before moving on.
+
+**Key collisions:** pr-tour's keys are global mappings, and a buffer-local mapping on the same key (for example one set by an LSP `on_attach`) takes precedence inside that buffer. The default `gL` is unused by Neovim and LazyVim; if your config maps any of the three keys buffer-locally, remap it with `opts = { keys = { more = "..." } }`.
 
 ### Environment Variables
 

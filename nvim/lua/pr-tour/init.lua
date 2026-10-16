@@ -7,7 +7,7 @@ local render = require("pr-tour.render")
 local nav = require("pr-tour.nav")
 
 local M = {}
-local config = { keys = { next = "]s", prev = "[s", more = "gK" } }
+local config = { keys = { next = "]s", prev = "[s", more = "gL" } }
 local configured = false
 
 local function define_highlights()

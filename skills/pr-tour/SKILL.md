@@ -85,7 +85,7 @@ Write the tour to the scratchpad as `tour-<slice-number>.json`:
         { "side": "head", "line": 41, "kind": "explain", "text": "reads the magic bytes instead" },
         { "side": "head", "line": 88, "kind": "finding", "severity": "med", "text": "lock never released on throw" }
       ],
-      "more": "Optional longer explanation, shown only when the reviewer presses gK."
+      "more": "Optional longer explanation, shown only when the reviewer presses gL."
     }
   ]
 }
@@ -110,7 +110,7 @@ Run `$PRT load <tour.json>`. If `dropped` is non-empty, fix the tour and reload 
 
 > Behavior 2 loaded: 6 stops, 1 finding.
 
-On the first tour only, add the keys: `]s` / `[s` move between stops, `gK` opens a stop's detail.
+On the first tour only, add the keys: `]s` / `[s` move between stops, `gL` opens a stop's detail.
 
 ### 3d. While the reviewer walks
 
