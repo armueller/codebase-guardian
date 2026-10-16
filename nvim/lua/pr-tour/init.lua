@@ -4,6 +4,7 @@
 local state = require("pr-tour.state")
 local tour = require("pr-tour.tour")
 local render = require("pr-tour.render")
+local nav = require("pr-tour.nav")
 
 local M = {}
 local config = { keys = { next = "]s", prev = "[s", more = "gK" } }
@@ -52,10 +53,36 @@ local function do_load(path)
   state.tour = t
   state.real_roots = { base = vim.uv.fs_realpath(t.roots.base), head = vim.uv.fs_realpath(t.roots.head) }
   render.start()
+  nav.attach(config.keys)
   render.show(1)
   return { ok = true, title = t.title, stops = #t.stops, findings = count_findings(t), dropped = dropped }
 end
 
+local function do_clear()
+  local had_tour = state.tour ~= nil
+  render.stop()
+  nav.detach()
+  if state.tab and vim.api.nvim_tabpage_is_valid(state.tab) then
+    vim.api.nvim_set_current_tabpage(state.tab)
+    vim.cmd("diffoff!")
+    if #vim.api.nvim_list_tabpages() > 1 then vim.cmd("tabclose") end
+  end
+  -- The base worktree is about to be removed: drop its buffers and language servers.
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if state.side_of(vim.api.nvim_buf_get_name(buf)) == "base" and not vim.bo[buf].modified then
+      pcall(vim.api.nvim_buf_delete, buf, {})
+    end
+  end
+  for _, client in ipairs(vim.lsp.get_clients()) do
+    if client.root_dir and state.side_of(client.root_dir) == "base" then vim.lsp.stop_client(client.id) end
+  end
+  state.reset()
+  return { ok = true, cleared = had_tour }
+end
+
 function M.load(path) return respond(do_load, path) end
+function M.where() return respond(nav.where) end
+function M.jump(args) return respond(nav.jump, args) end
+function M.clear() return respond(do_clear) end
 
 return M
