@@ -73,8 +73,18 @@ local function do_clear()
       pcall(vim.api.nvim_buf_delete, buf, {})
     end
   end
+  -- A base-rooted server can also be serving head buffers (servers are shared
+  -- across worktrees); stop it only when nothing outside base still uses it.
   for _, client in ipairs(vim.lsp.get_clients()) do
-    if client.root_dir and state.side_of(client.root_dir) == "base" then vim.lsp.stop_client(client.id) end
+    if client.root_dir and state.side_of(client.root_dir) == "base" then
+      local still_used = false
+      for buf in pairs(client.attached_buffers) do
+        if vim.api.nvim_buf_is_loaded(buf) and state.side_of(vim.api.nvim_buf_get_name(buf)) ~= "base" then
+          still_used = true
+        end
+      end
+      if not still_used then vim.lsp.stop_client(client.id) end
+    end
   end
   state.reset()
   return { ok = true, cleared = had_tour }

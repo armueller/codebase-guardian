@@ -111,11 +111,14 @@ end
 local function build_layout(stop)
   local first = reset_windows()
   if stop.view == "split" then
-    open_in(first, stop.paths.base)
-    vim.cmd("rightbelow vsplit")
+    -- Head is read first: the first file read starts a language server rooted in
+    -- its worktree and later files join it, so the shared server is rooted in
+    -- head, which outlives the tour. Base still ends up as the left pane.
+    open_in(first, stop.paths.head)
+    vim.cmd("leftabove vsplit")
     local second = vim.api.nvim_get_current_win()
-    open_in(second, stop.paths.head)
-    state.wins = { base = first, head = second }
+    open_in(second, stop.paths.base)
+    state.wins = { base = second, head = first }
     for _, w in ipairs({ first, second }) do
       vim.api.nvim_win_call(w, function() vim.cmd("diffthis") end)
     end

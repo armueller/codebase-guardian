@@ -1,6 +1,6 @@
 import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { HAS_NVIM, startNvim, makeFixture, sampleTour, writeTour, waitFor, layout, marks, type Nvim, type Fixture } from './helpers/nvim-harness.js';
+import { HAS_NVIM, startNvim, makeFixture, sampleTour, writeTour, waitFor, sleep, layout, marks, type Nvim, type Fixture } from './helpers/nvim-harness.js';
 
 describe('pr-tour navigation and queries', { skip: !HAS_NVIM && 'nvim not on PATH' }, () => {
   let fx: Fixture;
@@ -245,6 +245,54 @@ describe('pr-tour navigation and queries', { skip: !HAS_NVIM && 'nvim not on PAT
     nv.api('clear');
     const s = nv.lua<any>(`local b = vim.fn.bufnr([==[${head('src/modified.ts')}]==]) return { first = vim.api.nvim_buf_get_lines(b, 0, 1, false)[1], modified = vim.bo[b].modified }`);
     assert.deepEqual(s, { first: 'EDITED', modified: true });
+  });
+
+  /**
+   * Start an in-process fake language server rooted at `root` and attach it to the given buffers.
+   * @param root - the client's root_dir
+   * @param files - absolute paths of loaded buffers to attach
+   * @returns the client id
+   */
+  const fakeClient = (root: string, files: string[]): number => nv.lua<number>(
+    `local function cmd(d) local closing = false return { ` +
+    `request = function(method, _, cb) if method == 'initialize' then cb(nil, { capabilities = {} }) elseif method == 'shutdown' then cb(nil, vim.NIL) end return true, 1 end, ` +
+    `notify = function(method) if method == 'exit' then closing = true vim.schedule(function() d.on_exit(0, 15) end) end return true end, ` +
+    `is_closing = function() return closing end, terminate = function() closing = true end } end ` +
+    `local files = vim.json.decode([==[${JSON.stringify(files)}]==]) ` +
+    `local id = vim.lsp.start({ name = 'fake', cmd = cmd, root_dir = [==[${root}]==] }, { bufnr = vim.fn.bufnr(files[1]), reuse_client = function() return false end }) ` +
+    `for i = 2, #files do vim.lsp.buf_attach_client(vim.fn.bufnr(files[i]), id) end return id`);
+  /**
+   * Whether a language client is still running (not stopped or stopping).
+   * @param id - client id from fakeClient
+   * @returns true while the client exists and is not stopped
+   */
+  const alive = (id: number) => nv.lua<boolean>(`local c = vim.lsp.get_client_by_id(${id}) return c ~= nil and not c:is_stopped()`);
+
+  it('split stops read the head file before the base file', () => {
+    nv.lua(`_G.prt_reads = {} vim.api.nvim_create_autocmd('BufReadPost', { callback = function(ev) table.insert(_G.prt_reads, vim.api.nvim_buf_get_name(ev.buf)) end }) return true`);
+    load();
+    const reads = nv.lua<string[]>(`return _G.prt_reads`);
+    const h = reads.indexOf(head('src/modified.ts'));
+    const b = reads.indexOf(base('src/modified.ts'));
+    assert.ok(h !== -1 && b !== -1 && h < b, JSON.stringify(reads));
+    assert.equal(layout(nv).wins[0].name, base('src/modified.ts'), 'base stays the left pane');
+  });
+
+  it('clear keeps a base-rooted language server that still serves head buffers', () => {
+    load();
+    const id = fakeClient(fx.baseRoot, [base('src/modified.ts'), head('src/modified.ts')]);
+    assert.ok(alive(id));
+    nv.api('clear');
+    sleep(500);
+    assert.ok(alive(id), 'stopping it would leave the head buffer without LSP');
+  });
+
+  it('clear stops a base-rooted language server that only served base buffers', () => {
+    load();
+    const id = fakeClient(fx.baseRoot, [base('src/modified.ts')]);
+    assert.ok(alive(id));
+    nv.api('clear');
+    waitFor(() => !alive(id), 2000);
   });
 
   it('entry points return JSON errors instead of throwing', () => {
