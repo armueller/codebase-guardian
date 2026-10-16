@@ -50,6 +50,17 @@ local function show_more()
   })
 end
 
+--- The reviewer's global normal-mode mapping for `lhs`, or false. Not maparg:
+--- it returns the current buffer's local mapping when there is one, and the
+--- global mapping would then be overwritten and never restored.
+local function global_map(lhs)
+  local want = vim.keycode(lhs)
+  for _, m in ipairs(vim.api.nvim_get_keymap("n")) do
+    if vim.keycode(m.lhs) == want then return m end
+  end
+  return false
+end
+
 --- Install keymaps and selection tracking for a newly loaded tour.
 function M.attach(keys)
   M.detach()
@@ -67,8 +78,7 @@ function M.attach(keys)
     { keys.more, show_more, "pr-tour: stop detail" },
   }
   for _, m in ipairs(maps) do
-    local existing = vim.fn.maparg(m[1], "n", false, true)
-    saved_maps[m[1]] = (existing.lhs ~= nil and existing.buffer == 0) and existing or false
+    saved_maps[m[1]] = global_map(m[1])
     vim.keymap.set("n", m[1], m[2], { desc = m[3] })
   end
 end

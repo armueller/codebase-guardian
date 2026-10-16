@@ -172,6 +172,14 @@ describe('pr-tour navigation and queries', { skip: !HAS_NVIM && 'nvim not on PAT
     assert.equal(nv.lua(`return vim.fn.maparg(']s', 'n')`), ':let g:mine = 1<CR>');
   });
 
+  it('clear restores the global mapping even when the buffer has its own', () => {
+    nv.lua(`vim.keymap.set('n', ']s', function() vim.g.mine = 'global' end, { desc = 'mine' }) vim.keymap.set('n', ']s', ':let g:mine = "local"<CR>', { buffer = 0 }) return true`);
+    load();
+    nv.api('clear');
+    const g = nv.lua<any>(`for _, m in ipairs(vim.api.nvim_get_keymap('n')) do if m.lhs == ']s' then return { desc = m.desc, callback = type(m.callback) } end end return vim.NIL`);
+    assert.deepEqual(g, { desc: 'mine', callback: 'function' });
+  });
+
   it('clear keeps unsaved changes', () => {
     nv.lua(`vim.cmd('edit ' .. vim.fn.fnameescape([==[${head('src/modified.ts')}]==])) vim.api.nvim_buf_set_lines(0, 0, 1, false, { 'EDITED' }) return true`);
     load();
