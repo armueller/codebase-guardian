@@ -137,7 +137,7 @@ export function startNvim(cwd: string, opts: { sockDir?: string; plugin?: boolea
   const dir = opts.sockDir ?? mkdtempSync(path.join(tmpdir(), 'prt-'));
   mkdirSync(dir, { recursive: true });
   const sock = path.join(dir, `nvim.${process.pid}.${Math.random().toString(36).slice(2, 8)}`);
-  const args = ['--headless', '--clean', '--listen', sock];
+  const args = ['--headless', '--clean', '-n', '--listen', sock];
   if (opts.plugin !== false) args.push('--cmd', `set rtp+=${path.join(REPO, 'nvim')}`);
   const proc = spawn('nvim', args, { cwd, stdio: 'ignore' });
   const deadline = Date.now() + 5000;
@@ -429,3 +429,55 @@ export function cli(args: string[], env: Record<string, string> = {}) {
   }
   return { status: r.status, stdout: r.stdout, stderr: r.stderr, json };
 }
+
+/**
+ * Visible (non-float) windows of the current tab, plus tab count and cursor.
+ *
+ * @what Snapshot the editor's window layout
+ * @how Runs a Lua body that walks the current tabpage's non-floating windows
+ * @why Rendering tests assert on split structure, diff mode, filetype and locks
+ * @param {Nvim} nv - Running Neovim handle
+ * @returns {any} Layout object (any on purpose: tests assert on arbitrary shapes)
+ * @sideeffects None (reads editor state over RPC)
+ * @systemlayer Utility
+ * @domain testing, neovim
+ * @tags neovim, layout, test-harness
+ */
+export const layout = (nv: Nvim) =>
+  nv.lua<any>(`
+    local out = { tabs = #vim.api.nvim_list_tabpages(), wins = {}, current = vim.api.nvim_buf_get_name(0), cursor = vim.api.nvim_win_get_cursor(0)[1] }
+    for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      if vim.api.nvim_win_get_config(w).relative == '' then
+        local b = vim.api.nvim_win_get_buf(w)
+        out.wins[#out.wins + 1] = { name = vim.api.nvim_buf_get_name(b), diff = vim.wo[w].diff, ft = vim.bo[b].filetype, modifiable = vim.bo[b].modifiable, readonly = vim.bo[b].readonly }
+      end
+    end
+    return out`);
+
+/**
+ * pr-tour extmarks on the buffer for `file`, flattened.
+ *
+ * @what List pr-tour extmarks in one buffer
+ * @how Looks up the buffer by name and reads extmarks in the pr-tour namespace
+ * @why Tests assert on pinned notes, signs and focus highlights
+ * @param {Nvim} nv - Running Neovim handle
+ * @param {string} file - Absolute path of the buffer
+ * @returns {any[]} Flattened marks (any on purpose: tests assert on arbitrary shapes)
+ * @sideeffects None (reads editor state over RPC)
+ * @systemlayer Utility
+ * @domain testing, neovim
+ * @tags neovim, extmarks, test-harness
+ */
+export const marks = (nv: Nvim, file: string) =>
+  nv.lua<any[]>(`
+    local buf = vim.fn.bufnr([==[${file}]==])
+    if buf < 0 then return {} end
+    local ns = vim.api.nvim_create_namespace('pr-tour')
+    local out = {}
+    for _, m in ipairs(vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })) do
+      local d = m[4]
+      local text = ''
+      for _, chunk in ipairs(d.virt_text or {}) do text = text .. chunk[1] end
+      out[#out + 1] = { row = m[2], text = text, sign = vim.trim(d.sign_text or ''), line_hl = d.line_hl_group or '', virt_lines = d.virt_lines and #d.virt_lines or 0 }
+    end
+    return out`);
