@@ -115,6 +115,114 @@ describe('pr-tour navigation and queries', { skip: !HAS_NVIM && 'nvim not on PAT
     assert.equal(nv.lua(`return _G.prt_echoes`), 1, 'returning to the trimmed focus line echoes it');
   });
 
+  /** Record every echoed message's text in _G.prt_echoed, oldest first. */
+  const spyEcho = () => nv.lua(`_G.prt_echoed = {} local orig = vim.api.nvim_echo vim.api.nvim_echo = function(chunks, ...) local t = {} for _, c in ipairs(chunks) do t[#t + 1] = c[1] end table.insert(_G.prt_echoed, table.concat(t)) return orig(chunks, ...) end return true`);
+  /**
+   * The newest echoed message, or null.
+   * @returns the last text recorded by spyEcho
+   */
+  const lastEcho = () => nv.lua<string | null>(`return _G.prt_echoed[#_G.prt_echoed] or vim.NIL`);
+  /**
+   * Where the cursor is, as side:line.
+   * @returns the current window's worktree side and cursor line
+   */
+  const at = () => {
+    const w = where();
+    return `${w.side}:${w.line}`;
+  };
+
+  it(']n steps through the notes by line, base before head at the same line, then stops', () => {
+    load();
+    spyEcho();
+    nv.keys(']n');
+    assert.equal(at(), 'base:6');
+    assert.equal(lastEcho(), 'note 1/3: ◀ old value here');
+    nv.keys(']n');
+    assert.equal(at(), 'head:6');
+    assert.equal(lastEcho(), 'note 2/3: ◀ new line inserted');
+    nv.keys(']n');
+    assert.equal(at(), 'head:10');
+    assert.equal(lastEcho(), 'note 3/3: ◆ [med] suspicious');
+    nv.keys(']n');
+    assert.equal(at(), 'head:10', 'the cursor stays on the last note');
+    assert.equal(lastEcho(), 'pr-tour: last note (3/3), ]s for the next stop');
+  });
+
+  it('[n steps back, and says so at the first note', () => {
+    load();
+    spyEcho();
+    nv.keys(']n]n');
+    nv.keys('[n');
+    assert.equal(at(), 'base:6');
+    assert.equal(lastEcho(), 'note 1/3: ◀ old value here');
+    nv.keys('[n');
+    assert.equal(at(), 'base:6');
+    assert.equal(lastEcho(), 'pr-tour: no earlier note, [s for the previous stop');
+  });
+
+  it('the cursor echo does not overwrite the note counter on landing', () => {
+    loadSplit([[6, long], [8, long]]);
+    spyEcho();
+    nv.keys(']n]n');
+    sleep(50);
+    assert.match(lastEcho() ?? '', /^note 2\/2: ◀ word word.* gL$/);
+  });
+
+  it('a new stop starts its notes from the first one', () => {
+    load();
+    nv.keys(']n]n]n');
+    nv.keys(']s]s');
+    spyEcho();
+    nv.keys(']n');
+    assert.equal(at(), 'head:3');
+    assert.equal(lastEcho(), 'note 1/1: ◀ just passes through');
+  });
+
+  it(']n on a stop without notes says so', () => {
+    load();
+    nv.keys(']s');
+    spyEcho();
+    nv.keys(']n');
+    assert.equal(lastEcho(), 'pr-tour: this stop has no notes');
+  });
+
+  it(']n opens a fold hiding the note', () => {
+    const t = sampleTour(fx);
+    t.stops = [{ title: 'far', file: 'src/long.ts', view: 'split', line: 5,
+      notes: [{ side: 'head', line: 69, kind: 'explain', text: 'far note' }] }];
+    nv.api('load', `[==[${writeTour(fx.root, t)}]==]`);
+    nv.keys('zM');
+    nv.keys(']n');
+    assert.equal(nv.lua(`return vim.fn.foldclosed(69)`), -1);
+    assert.equal(at(), 'head:69');
+  });
+
+  it(']n after a jump goes back to the stop and starts from its first note', () => {
+    load();
+    nv.api('jump', `{ file = 'src/unchanged.ts', line = 2 }`);
+    nv.keys(']n');
+    assert.equal(where().stop, 1);
+    assert.equal(at(), 'base:6');
+  });
+
+  it(']n does nothing outside the tour tab', () => {
+    load();
+    nv.lua(`vim.cmd('tabfirst') return true`);
+    nv.keys(']n');
+    assert.equal(nv.lua(`return require('pr-tour.state').note_index`), 0);
+  });
+
+  it('arriving at a stop echoes its note count before the title', () => {
+    load();
+    spyEcho();
+    nv.keys(']s');
+    assert.equal(lastEcho(), 'pr-tour 2/5 · no notes: Renamed');
+    nv.keys(']s');
+    assert.equal(lastEcho(), 'pr-tour 3/5 · 1 note: Unchanged hop');
+    nv.keys('[s[s');
+    assert.equal(lastEcho(), 'pr-tour 1/5 · 3 notes: Modified pivot');
+  });
+
   it('gL with no note on the line and no stop detail opens no float', () => {
     load();
     nv.keys(']s]s');

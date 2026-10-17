@@ -106,11 +106,36 @@ Write the tour to the scratchpad as `tour-<slice-number>.json`:
 
 ### 3c. Load and hand over
 
-Run `$PRT load <tour.json>`. If `dropped` is non-empty, fix the tour and reload — never present a tour with dropped items. Then say exactly one line and stop:
+Run `$PRT load <tour.json>`. If `dropped` is non-empty, fix the tour and reload — never present a tour with dropped items. Then post the slice intro and stop. It is what the reviewer reads before walking, so it sets context — it does not deliver the analysis:
 
-> Behavior 2 loaded: 6 stops, 1 finding.
+```
+Behavior 2 loaded: route by header sniffing
 
-On the first tour only, add the keys: `]s` / `[s` move between stops, `gL` opens a stop's detail.
+Problem: files renamed with the wrong extension were routed to the wrong converter,
+because routing looked only at the extension.
+Solution: route() now reads the file's magic bytes through a new sniff() helper; the
+extension is only a fallback. 6 files changed (+120 / −45); this tour covers 4 of them,
+the other 2 are test fixtures.
+
+Stops:
+1. route.ts:41 (split) — Before: the extension check, and why it was there. Renamed
+   uploads were the known failure.
+2. route.ts:41 (split) — The pivot. sniff() runs first, and the old check only runs when
+   sniff() can't tell.
+3. sniff.ts:12 (head) — The new helper. It reads 16 bytes, so a stream must be rewound
+   before the converter reads it — the finding is here.
+4. upload.ts:88 (head) — An untouched caller that passes a stream. Worth checking it still
+   gets the bytes it expects.
+
+6 stops, 1 finding (med, introduced).
+```
+
+- **Problem** and **Solution**: one or two plain sentences each, in the reviewer's terms (what was wrong or missing, what the PR does about it and where).
+- **Scope**: file count and line totals for the PR (`git diff --shortstat <mergeBase>...<headSha>`), how many files this tour covers, and what the rest are (other slices, churn, tests).
+- **Stops**: one entry per stop — location, view, and what the stop is for and what to look at there. Usually one to three sentences; use what the stop needs, but don't repeat its title or the notes.
+- End with the stop and finding counts (with severity and introduced/inherited).
+
+On the first tour only, add the keys: `]s` / `[s` move between stops, `]n` / `[n` step through a stop's notes, `gL` shows a note in full and the stop's detail.
 
 ### 3d. While the reviewer walks
 

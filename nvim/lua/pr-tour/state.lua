@@ -11,6 +11,7 @@ function M.reset()
   M.real_roots = {} -- side -> realpath of that worktree
   M.shown_at = nil -- "win:line" where the last show() put the cursor
   M.away = false -- true after a jump moved the reviewer off the current stop
+  M.note_index = 0 -- the current stop's note ]n / [n last moved to (0 = none yet)
   M.last_visual = nil -- { buf, time } when visual mode was last left
 end
 

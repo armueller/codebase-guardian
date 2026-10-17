@@ -36,6 +36,56 @@ local function stepper(delta, lhs)
   end
 end
 
+--- The current stop's notes in reading order: by line, and at the same line
+--- base before head, so "before" is read ahead of "after".
+local function ordered_notes(stop)
+  local list = {}
+  for i, note in ipairs(stop.notes) do
+    if state.wins[note.side] then list[#list + 1] = { note = note, i = i } end
+  end
+  local side_rank = { base = 1, head = 2 }
+  table.sort(list, function(a, b)
+    if a.note.line ~= b.note.line then return a.note.line < b.note.line end
+    if a.note.side ~= b.note.side then return side_rank[a.note.side] < side_rank[b.note.side] end
+    return a.i < b.i
+  end)
+  return list
+end
+
+--- A note-stepping handler: moves to the next or previous note of the current
+--- stop, across panes, and echoes it in full with its position ("note 2/3").
+local function note_stepper(delta, keys)
+  return function()
+    if not (state.tour and in_tour_tab()) then return end
+    if state.away then render.show(state.index) end
+    local notes = ordered_notes(state.tour.stops[state.index])
+    local warn = function(msg) vim.api.nvim_echo({ { msg, "WarningMsg" } }, false, {}) end
+    if #notes == 0 then return warn("pr-tour: this stop has no notes") end
+    local target = state.note_index + delta
+    if target > #notes then
+      return warn(("pr-tour: last note (%d/%d), %s for the next stop"):format(#notes, #notes, keys.next))
+    end
+    if target < 1 then
+      return warn(("pr-tour: no earlier note, %s for the previous stop"):format(keys.prev))
+    end
+    state.note_index = target
+    local note = notes[target].note
+    local win = state.wins[note.side]
+    vim.api.nvim_set_current_win(win)
+    vim.api.nvim_win_set_cursor(win, { note.line, 0 })
+    vim.cmd("normal! zv")
+    -- The cursor echo would overwrite the counter on landing; skip it once.
+    state.shown_at = win .. ":" .. note.line
+    local label, hl = render.note_label(note)
+    local msg = ("note %d/%d: %s"):format(target, #notes, label)
+    local room = math.max(vim.v.echospace - 1, 10)
+    if vim.fn.strdisplaywidth(msg) > room then
+      msg = render.fit(msg, room - #(" " .. keys.more)) .. " " .. keys.more
+    end
+    vim.api.nvim_echo({ { msg, hl } }, false, {})
+  end
+end
+
 --- The current stop's notes on the cursor line, in full.
 local function notes_here()
   local buf = vim.api.nvim_get_current_buf()
@@ -126,6 +176,8 @@ function M.attach(keys)
     { keys.next, stepper(1, keys.next), "pr-tour: next stop" },
     { keys.prev, stepper(-1, keys.prev), "pr-tour: previous stop" },
     { keys.more, show_more, "pr-tour: stop detail" },
+    { keys.next_note, note_stepper(1, keys), "pr-tour: next note" },
+    { keys.prev_note, note_stepper(-1, keys), "pr-tour: previous note" },
   }
   for _, m in ipairs(maps) do
     saved_maps[m[1]] = global_map(m[1])

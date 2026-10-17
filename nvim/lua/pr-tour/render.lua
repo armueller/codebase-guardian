@@ -167,7 +167,8 @@ function M.fit(text, width)
   return out .. "…"
 end
 
-local function note_label(note)
+--- A note as shown on screen ("◀ text" or "◆ [sev] text") and its highlight group.
+function M.note_label(note)
   if note.kind == "finding" then
     return ("◆ [%s] %s"):format(note.severity, note.text), "PrTourFinding"
   end
@@ -182,7 +183,7 @@ local MIN_TRIMMED = 12
 --- the other); elsewhere it wraps onto virtual lines below. Every note is
 --- recorded in state.notes so gL and the cursor echo can show it in full.
 local function place_note(buf, win, note, trim)
-  local label, hl = note_label(note)
+  local label, hl = M.note_label(note)
   local row = note.line - 1
   local info = vim.fn.getwininfo(win)[1]
   local text_width = info.width - info.textoff
@@ -252,6 +253,7 @@ function M.show(index)
   local stop = state.tour.stops[index]
   state.index = index
   state.away = false
+  state.note_index = 0
   M.ensure_tab()
   if not layout_intact(stop) then build_layout(stop) end
   decorate(stop)
@@ -262,7 +264,14 @@ function M.show(index)
   state.shown_at = win .. ":" .. stop.line
   -- Truncated to the echo area: an overlong message raises a hit-enter prompt,
   -- which would block every later RPC call from the CLI.
-  local msg = ("pr-tour %d/%d: %s"):format(index, #state.tour.stops, stop.title)
+  -- The note count comes before the title so truncation never hides it.
+  local count = #stop.notes .. " notes"
+  if #stop.notes == 0 then
+    count = "no notes"
+  elseif #stop.notes == 1 then
+    count = "1 note"
+  end
+  local msg = ("pr-tour %d/%d · %s: %s"):format(index, #state.tour.stops, count, stop.title)
   vim.api.nvim_echo({ { M.fit(msg, math.max(vim.v.echospace - 1, 10)) } }, false, {})
 end
 

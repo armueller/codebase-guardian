@@ -77,10 +77,11 @@ describe('pr-tour skill', () => {
     assert.ok(skill.includes('`no tour loaded`'), 'error table missing: no tour loaded');
   });
 
-  it('documents the default stop-detail key the plugin binds', () => {
+  it('documents every default key the plugin binds', () => {
     const init = readFileSync(path.join(__dirname, '..', 'nvim', 'lua', 'pr-tour', 'init.lua'), 'utf8');
-    const more = init.match(/more = "([^"]+)"/)?.[1];
-    assert.ok(more, 'init.lua default more key not found');
-    assert.ok(skill.includes(`\`${more}\` opens a stop's detail`), `skill does not name the more key ${more}`);
+    const keys = init.match(/keys = \{([^}]+)\}/)?.[1] ?? '';
+    const defaults = [...keys.matchAll(/(\w+) = "([^"]+)"/g)].map((m) => m[2]);
+    assert.equal(defaults.length, 5, `expected 5 default keys in init.lua, got ${defaults.join(', ')}`);
+    for (const key of defaults) assert.ok(skill.includes(`\`${key}\``), `skill does not name the key ${key}`);
   });
 });
