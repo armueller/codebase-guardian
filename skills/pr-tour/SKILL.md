@@ -139,7 +139,7 @@ Cross-slice synthesis, the plain-language recap, and draft / approve / post all 
 ## Teardown
 
 1. `$PRT clear`.
-2. Offer to remove each worktree you created (`git worktree remove <path>`); remove only on confirmation. Never remove the main checkout. If the head side was the main checkout, offer to switch it back to the branch it was on.
+2. Offer to remove each worktree you created; remove only on confirmation. First delete the dependency symlinks you made in it with `unlink <worktree>/<relative path>`, one per link: git counts a symlink as an untracked file (a `node_modules/` ignore rule matches only directories), so `git worktree remove` refuses while one is there. Never `rm -rf` a link, and never pass a path ending in `/` — that follows the link and deletes the main checkout's copy. Then `git worktree remove <path>`; if it still refuses, show `git -C <path> status --porcelain` and ask — never `--force` on your own. Never remove the main checkout. If the head side was the main checkout, offer to switch it back to the branch it was on.
 3. Notes and the review record follow the core's Review record section.
 
 ## When the CLI reports a problem

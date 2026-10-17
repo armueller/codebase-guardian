@@ -481,7 +481,7 @@ The path exists after your first Claude Code session with the plugin installed (
 
 **Use it:** run `/pr-tour <PR#>` in Claude. When asked, open Neovim in the printed worktree path in a second pane. Claude attaches by itself (`scripts/pr-tour attach`).
 
-`]s` / `[s` replace spell-error navigation only inside the tour tab; everywhere else they keep their usual meaning. After Claude jumps you to a stop (a `goto`), the first `]s` / `[s` returns you to that current stop before moving on.
+`]s` / `[s` replace spell-error navigation only inside the tour tab; everywhere else they keep their usual meaning. After Claude jumps you somewhere outside the tour (a `goto`), the first `]s` / `[s` takes you back to the stop you were on.
 
 **Key collisions:** pr-tour's keys are global mappings, and a buffer-local mapping on the same key (for example one set by an LSP `on_attach`) takes precedence inside that buffer. The default `gL` is unused by Neovim and LazyVim; if your config maps any of the three keys buffer-locally, remap it with `opts = { keys = { more = "..." } }`.
 
