@@ -1,0 +1,87 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const SKILLS = path.join(__dirname, '..', 'skills');
+const read = (rel: string) => readFileSync(path.join(SKILLS, rel), 'utf8');
+const headings = (md: string) => md.split('\n').filter((l) => /^#{2,3} /.test(l));
+
+const CORE_HEADINGS = [
+  '## Configuration',
+  '## Phase 0 — Pin the ground',
+  '## Phase 1 — Classify and quarantine',
+  '## Phase 2 — Build the slice map',
+  '## Phase 3 — Analyze each slice',
+  '### Rules for this phase',
+  '## Phase 4 — Cross-slice synthesis',
+  '## Phase 4.5 — Plain-language recap (the comprehension check)',
+  '## Phase 5 — Draft, approve, post',
+  '## Blind-spot taxonomy by change kind',
+  '## Machine-authored PR failure modes',
+  '## Review record',
+];
+
+describe('shared PR review core', () => {
+  const core = read('_shared/pr-review-core.md');
+  const walkthrough = read('pr-walkthrough/SKILL.md');
+
+  it('holds every shared phase and reference section', () => {
+    for (const h of CORE_HEADINGS) assert.ok(headings(core).includes(h), `core is missing: ${h}`);
+  });
+
+  it('is loaded by pr-walkthrough, which keeps only its presentation rules', () => {
+    assert.ok(walkthrough.includes('../_shared/pr-review-core.md'));
+    assert.ok(walkthrough.includes('**One slice per message. Never batch.**'));
+    assert.ok(walkthrough.includes('**Number your paragraphs**'));
+    assert.ok(!walkthrough.includes('## Phase 0 — Pin the ground'), 'Phase 0 must live only in the core');
+  });
+
+  it('does not duplicate a heading across the two files', () => {
+    const shared = headings(walkthrough).filter((h) => headings(core).includes(h));
+    assert.deepEqual(shared, []);
+  });
+});
+
+describe('pr-tour skill', () => {
+  const skill = read('pr-tour/SKILL.md');
+  const cliHeader = readFileSync(path.join(__dirname, '..', 'scripts', 'pr-tour'), 'utf8');
+
+  it('declares its name and loads the shared core', () => {
+    assert.match(skill, /^---\nname: pr-tour\n/);
+    assert.ok(skill.includes('../_shared/pr-review-core.md'));
+    assert.ok(skill.includes('../../scripts/pr-tour'));
+  });
+
+  it('uses every CLI subcommand, and the CLI documents each one', () => {
+    for (const sub of ['attach', 'load', 'where', 'goto', 'clear']) {
+      assert.ok(skill.includes(`$PRT ${sub}`), `skill never calls: ${sub}`);
+      assert.ok(cliHeader.includes(`#   pr-tour ${sub}`), `CLI header missing: ${sub}`);
+    }
+  });
+
+  it('documents the tour format fields the plugin validates', () => {
+    for (const field of ['"version": 1', '"headRoot"', '"baseRoot"', '"view"', '"baseFile"', '"endLine"', '"severity"', '"more"']) {
+      assert.ok(skill.includes(field), `skill tour schema missing ${field}`);
+    }
+  });
+
+  it('labels findings with confidence and introduced/inherited, as the core requires', () => {
+    assert.match(skill, /\[med · high confidence · introduced\]/);
+    assert.match(skill, /\[low · medium confidence · inherited\]/);
+  });
+
+  it('handles every plugin error the CLI can relay', () => {
+    assert.ok(skill.includes('`no tour loaded`'), 'error table missing: no tour loaded');
+  });
+
+  it('documents every default key the plugin binds', () => {
+    const init = readFileSync(path.join(__dirname, '..', 'nvim', 'lua', 'pr-tour', 'init.lua'), 'utf8');
+    const keys = init.match(/keys = \{([^}]+)\}/)?.[1] ?? '';
+    const defaults = [...keys.matchAll(/(\w+) = "([^"]+)"/g)].map((m) => m[2]);
+    assert.equal(defaults.length, 5, `expected 5 default keys in init.lua, got ${defaults.join(', ')}`);
+    for (const key of defaults) assert.ok(skill.includes(`\`${key}\``), `skill does not name the key ${key}`);
+  });
+});

@@ -1,0 +1,98 @@
+-- pr-tour: renders a review tour (stops + pinned notes) handed over by the
+-- scripts/pr-tour CLI, and reports where the reviewer is. Knows nothing about
+-- PRs or Claude. Every entry point returns a JSON string and never throws.
+local state = require("pr-tour.state")
+local tour = require("pr-tour.tour")
+local render = require("pr-tour.render")
+local nav = require("pr-tour.nav")
+
+local M = {}
+local config = { keys = { next = "]s", prev = "[s", more = "gL", next_note = "]n", prev_note = "[n" } }
+local configured = false
+
+local function define_highlights()
+  vim.api.nvim_set_hl(0, "PrTourNote", { link = "Comment", default = true })
+  vim.api.nvim_set_hl(0, "PrTourFinding", { link = "DiagnosticWarn", default = true })
+  vim.api.nvim_set_hl(0, "PrTourFocus", { link = "CursorLine", default = true })
+end
+
+function M.setup(opts)
+  config = vim.tbl_deep_extend("force", config, opts or {})
+  define_highlights()
+  vim.api.nvim_create_autocmd("ColorScheme", {
+    group = vim.api.nvim_create_augroup("pr-tour-highlights", { clear = true }),
+    callback = define_highlights,
+  })
+  configured = true
+end
+
+--- Run an entry point, turning any Lua error into {ok=false} JSON.
+local function respond(fn, ...)
+  if not configured then M.setup() end
+  local ok, result = pcall(fn, ...)
+  if not ok then result = { ok = false, error = tostring(result) } end
+  return vim.json.encode(result)
+end
+
+local function count_findings(t)
+  local n = 0
+  for _, stop in ipairs(t.stops) do
+    for _, note in ipairs(stop.notes) do
+      if note.kind == "finding" then n = n + 1 end
+    end
+  end
+  return n
+end
+
+local function do_load(path)
+  local raw, read_err = tour.read(path)
+  if not raw then return { ok = false, error = read_err, dropped = {} } end
+  local t, err, dropped = tour.validate(raw)
+  if not t then return { ok = false, error = err, dropped = dropped } end
+  render.stop()
+  state.tour = t
+  state.real_roots = { base = vim.uv.fs_realpath(t.roots.base), head = vim.uv.fs_realpath(t.roots.head) }
+  render.start()
+  nav.attach(config.keys)
+  render.show(1)
+  return { ok = true, title = t.title, stops = #t.stops, findings = count_findings(t), dropped = dropped }
+end
+
+local function do_clear()
+  local had_tour = state.tour ~= nil
+  render.stop()
+  nav.detach()
+  if state.tab and vim.api.nvim_tabpage_is_valid(state.tab) then
+    vim.api.nvim_set_current_tabpage(state.tab)
+    vim.cmd("diffoff!")
+    if #vim.api.nvim_list_tabpages() > 1 then vim.cmd("tabclose") end
+  end
+  -- The base worktree is about to be removed: drop its buffers and language servers.
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if state.side_of(vim.api.nvim_buf_get_name(buf)) == "base" and not vim.bo[buf].modified then
+      pcall(vim.api.nvim_buf_delete, buf, {})
+    end
+  end
+  -- A base-rooted server can also be serving head buffers (servers are shared
+  -- across worktrees); stop it only when nothing outside base still uses it.
+  for _, client in ipairs(vim.lsp.get_clients()) do
+    if client.root_dir and state.side_of(client.root_dir) == "base" then
+      local still_used = false
+      for buf in pairs(client.attached_buffers) do
+        if vim.api.nvim_buf_is_loaded(buf) and state.side_of(vim.api.nvim_buf_get_name(buf)) ~= "base" then
+          still_used = true
+        end
+      end
+      if not still_used then vim.lsp.stop_client(client.id) end
+    end
+  end
+  state.reset()
+  return { ok = true, cleared = had_tour }
+end
+
+function M.load(path) return respond(do_load, path) end
+function M.where() return respond(nav.where) end
+function M.jump(args) return respond(nav.jump, args) end
+function M.clear() return respond(do_clear) end
+
+return M

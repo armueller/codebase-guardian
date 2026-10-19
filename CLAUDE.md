@@ -78,6 +78,10 @@ python/
     ├── callgraph.py          # `python -m guardian_py callgraph <root>` — Jedi cross-file call edges
     └── metadata.py           # Parses `Domain:`/`Tags:`/`Layer:` docstring lines
 skills/                      # Slash commands (installed to ~/.claude/skills/)
+├── _shared/pr-review-core.md  # Analysis shared by /pr-walkthrough and /pr-tour (not a skill)
+nvim/
+└── lua/pr-tour/             # Neovim plugin for /pr-tour: renders tour JSON (stops + pinned notes), reports cursor/selection
+scripts/pr-tour              # Bash CLI bridge: finds the reviewer's Neovim by socket + cwd, calls the plugin, prints JSON
 templates/                   # guardian.config.json template + CLAUDE.md snippet
 tests/                       # Unit tests (tsx --test)
 ```
@@ -113,6 +117,10 @@ Two non-obvious constraints govern how the PreToolUse hook emits its decision. B
    `permissionDecision` is `"allow" | "deny" | "ask"`. See `helpers/hook-output.ts` (`buildPreToolUseDecision`) and its regression test `tests/hook-output.test.ts`.
 
 2. **The hook MUST NOT call `process.exit()` — set `process.exitCode` and let it exit naturally.** Building pattern context loads onnxruntime-node (via the embeddings pipeline) on every function edit. Its native thread pool aborts the process with `mutex lock failed: Invalid argument` (SIGABRT / exit 134) if `process.exit()` forces synchronous teardown while those threads are alive. A non-zero exit is treated as a non-blocking error (see constraint 1's failure mode), so the deny is discarded. Natural exit lets node drain stdout and tear the thread pool down cleanly (onnxruntime threads do not hold the event loop, so there is no hang). Every exit path in `pre-edit-validation.ts` sets `process.exitCode` and returns — see the "Exit Discipline" comment block there.
+
+### PR Tour Bridge (`scripts/pr-tour` + `nvim/lua/pr-tour/`)
+
+`/pr-tour` drives the reviewer's Neovim over its RPC socket. The CLI is bash 3.2 (macOS `/bin/bash`) with no `jq`; it finds Neovim by globbing default socket dirs and matching `getcwd()` (resolved — Neovim reports `/private/var/...`) against the head worktree, times RPC out via `perl alarm`, and prints one JSON object per call. The Lua plugin knows nothing about PRs: it validates a tour file, renders stops (diff split across the head and merge-base worktrees), pins notes with extmarks, and every entry point returns JSON and never throws. Socket paths must stay ≤ 103 bytes (macOS). Tests: `tests/pr-tour-*.test.ts` drive headless Neovim via `tests/helpers/nvim-harness.ts`.
 
 ### Search Hint Hook (`search-hint.ts`)
 
