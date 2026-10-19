@@ -461,7 +461,7 @@ Both skills flag a personal-looking path found in a committed config, and neithe
 
 ### PR Tour Setup
 
-`/pr-tour <PR#>` runs the same analysis as `/pr-walkthrough` but walks you through each behavior **inside your own Neovim**. Claude checks out the PR head and the merge-base as two git worktrees, so the before pane and the after pane are both real files with go-to-definition, references and hover. Each behavior arrives as a tour of stops with short notes pinned to the lines they describe; you move with `]s` / `[s`, press `gL` for a stop's longer detail, and ask questions in the Claude pane — Claude reads where your cursor and selection are.
+`/pr-tour <PR#>` runs the same analysis as `/pr-walkthrough` but walks you through each behavior **inside your own Neovim**. Claude checks out the PR head and the merge-base as two git worktrees, so the before pane and the after pane are both real files with go-to-definition, references and hover. Each behavior arrives as a tour of stops with short notes pinned to the lines they describe; you move with `]s` / `[s`, step through a stop's notes with `]n` / `[n`, press `gL` for a stop's longer detail, and ask questions in the Claude pane — Claude reads where your cursor and selection are.
 
 **Requirements:** Neovim ≥ 0.10, `perl` (preinstalled on macOS and most Linux), and a terminal where you can put Claude and Neovim side by side (kitty, tmux, WezTerm, …).
 
@@ -477,15 +477,45 @@ return {
 }
 ```
 
-The path exists after your first Claude Code session with the plugin installed (the SessionStart bootstrap builds it). Highlights are overridable: `PrTourNote`, `PrTourFinding`, `PrTourFocus`.
+The path exists after your first Claude Code session with the plugin installed (the SessionStart bootstrap builds it). Plain lazy.nvim takes the same spec. Without a plugin manager, add the directory to your runtimepath in `init.lua`:
 
-**Use it:** run `/pr-tour <PR#>` in Claude. When asked, open Neovim in the printed worktree path in a second pane. Claude attaches by itself (`scripts/pr-tour attach`).
+```lua
+vim.opt.rtp:append(vim.fn.expand("~/.claude/plugins/data/codebase-guardian-codebase-guardian/app/nvim"))
+```
+
+`setup()` is optional: the plugin runs it with the defaults on first use. Call `require("pr-tour").setup({ keys = { ... } })` only to change keys. Highlights are overridable: `PrTourNote`, `PrTourFinding`, `PrTourFocus`.
+
+You don't need a separate check: if Neovim is missing the plugin, Claude's first `attach` reports it and points back here.
+
+**A session, step by step:**
+
+1. Run `/pr-tour <PR#>` in Claude. It checks out the PR head and the merge-base as worktrees next to your repo (`../<repo>-pr-<N>` and `../<repo>-pr-<N>-base`). If your checkout is clean and you agree, it uses your checkout for the head instead. For dependencies, each side either gets a real install (when the PR changes dependency files) or links to your checkout's `node_modules` / `.venv`; Claude says which.
+2. When asked, open Neovim in the head worktree in a second pane (`cd <path> && nvim`). Claude finds it by itself, so there's no port or command to type.
+3. Claude posts a behavior map: the PR sliced into behaviors, with mechanical churn set aside. Reorder or drop slices in the Claude pane.
+4. Each slice loads as a tour in its own Neovim tab. Claude posts a short intro first: the problem, the solution, how many files the PR touches and how many the tour covers, and a line or two on each stop.
+5. Walk it at your own pace. `]s` / `[s` move between stops and `]n` / `[n` step through each stop's notes. The left (old code) pane is read-only. `gd`, `gr` and `K` work on both sides.
+6. Ask anything in the Claude pane. Claude reads your stop, file, line and visual selection first, so "what does this do?" about selected lines just works, even after you leave visual mode. It may jump you to another spot; the next `]s` / `[s` brings you back to your stop.
+7. When you're done with a slice, Claude lists its findings (severity, confidence, introduced by this PR or inherited). Reply by number ("1 yes, 2 no"). Accepted findings become inline review comments.
+8. After the last slice, Claude writes a short recap and drafts your review. Nothing is posted without your approval.
+9. Teardown: Claude clears the tour (closes the tab, removes the notes, keeps the language server your own buffers use). It offers to remove each worktree it created, and removes them only if you say yes.
 
 **Keys:** `]s` / `[s` move between stops. `]n` / `[n` step through the current stop's notes in reading order, across both panes, and show each one in full as `note 2/3: …`; the arrival message shows how many notes the stop has. `gL` shows the cursor line's notes in full plus the stop's detail.
 
 `]s` / `[s` replace spell-error navigation only inside the tour tab; everywhere else they keep their usual meaning. After Claude jumps you somewhere outside the tour (a `goto`), the first `]s` / `[s` takes you back to the stop you were on.
 
-**Key collisions:** pr-tour's keys are global mappings, and a buffer-local mapping on the same key (for example one set by an LSP `on_attach`) takes precedence inside that buffer. The default `gL` is unused by Neovim and LazyVim; if your config maps any of these keys buffer-locally, remap it with `opts = { keys = { more = "..." } }`.
+**Key collisions:** pr-tour's keys are global mappings, and a buffer-local mapping on the same key (for example one set by an LSP `on_attach`) takes precedence inside that buffer. The default `gL` is unused by Neovim and LazyVim; if your config maps any of these keys buffer-locally, remap it, for example `opts = { keys = { more = "<leader>pm" } }`. The keys are `next`, `prev`, `more`, `next_note` and `prev_note`.
+
+**Troubleshooting** (Claude relays these and usually tells you what to do):
+
+| Message | What to do |
+|---|---|
+| `no Neovim is open in <path>` | Open Neovim in that exact directory; Claude retries. |
+| `N Neovim instances are open in <path>` | Close the extras, or set `PR_TOUR_NVIM_SOCKET` to the one to use. |
+| `did not respond within 5s` | Neovim is probably at a prompt (swap file, hit-enter). Press `Esc` in Neovim and Claude retries. `PR_TOUR_TIMEOUT` raises the limit. |
+| `does not have the pr-tour plugin` | The install step above didn't take. Check the path exists, then restart Neovim. |
+| `no tour loaded` / `not attached` | Neovim was restarted. Claude finds the new instance and reloads the tour from its file; nothing is lost. |
+| A key does nothing | A buffer-local mapping is overriding it in that buffer. Remap it as shown above. |
+| `socket path is N bytes` | Your `$TMPDIR` is too deep for a macOS socket (103-byte limit). Start Neovim with a shorter `--listen` path and set `PR_TOUR_NVIM_SOCKET` to it. |
 
 ### Environment Variables
 
