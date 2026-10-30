@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import path from 'path';
-import { countChangesSinceBuild } from '../src/hooks/helpers/index-staleness.js';
+import { countChangesSinceBuild } from '../src/shared/index-staleness.js';
 
 const SCOPE = { extensions: ['.ts', '.py'], sourceDirectories: ['.'], docsDirectories: ['docs'] };
 

@@ -17,6 +17,7 @@ import {
 import { generateEmbeddings, invalidateCache } from './embeddings.js';
 import { resolveConfig } from '../config.js';
 import { isPythonTestFile } from '../shared/py-paths.js';
+import { locateBodies, maskRanges, type BodyRange } from './ts-bodies.js';
 import { extractPythonFile, type PyExtracted } from './py-index.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -34,6 +35,7 @@ export interface ParsedJSDoc {
   lineNumber: number;
   body: string;
   blockEnd?: number;
+  bodyRange?: BodyRange;
 }
 
 export interface ParsedDoc {
@@ -127,13 +129,36 @@ export function extractTag(block: string, tagName: string): string {
 }
 
 /**
+ * @what Finds the body of the declaration a JSDoc block documents
+ * @how Skips whitespace and any further comments after the block, then looks up the declaration that starts there in the parser's body map
+ * @why A JSDoc block is followed by its declaration, sometimes after an eslint or similar line comment; the parser keys each declaration by where its code starts
+ *
+ * @param {string} content The file text
+ * @param {Map<number, BodyRange>} bodies Declaration start offset → body range, from locateBodies
+ * @param {number} blockEnd Offset just past the JSDoc block
+ * @returns {BodyRange | undefined} The documented declaration's body, or undefined when none starts there
+ *
+ * @sideeffects None
+ * @systemlayer Utility
+ * @domain code-index, code-extraction
+ * @tags jsdoc, body-range, declaration-lookup
+ */
+export function bodyRangeAfter(content: string, bodies: Map<number, BodyRange>, blockEnd: number): BodyRange | undefined {
+  const trivia = /(?:\s+|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*/y;
+  trivia.lastIndex = blockEnd;
+  trivia.exec(content);
+  return bodies.get(trivia.lastIndex);
+}
+
+/**
  * @what Parses a JSDoc comment block and extracts structured guardian-specific tags
- * @how Uses regex-based extractTag helper to pull tags from the block, then uses the caller-provided blockStartIndex for precise positioning to extract function name and body (avoids indexOf re-search which fails on duplicate blocks)
+ * @how Uses regex-based extractTag helper to pull tags from the block, then uses the caller-provided blockStartIndex for precise positioning to extract function name and body (avoids indexOf re-search which fails on duplicate blocks); the body comes from bodyRange when the caller located it with the TypeScript parser, else from the text-based brace scan
  * @why Core indexing logic that converts raw JSDoc comments into structured data for the semantic code index
  *
  * @param {string} block The raw JSDoc comment block text
  * @param {string} fileContent The full file content containing the JSDoc block
  * @param {number} blockStartIndex The character index in fileContent where the JSDoc block starts (from regex.exec match.index)
+ * @param {BodyRange} [bodyRange] The documented declaration's body, located by the TypeScript parser
  * @returns {ParsedJSDoc | null} Structured JSDoc data or null if no @domain tag found
  *
  * @sideeffects None
@@ -141,7 +166,7 @@ export function extractTag(block: string, tagName: string): string {
  * @domain code-index, jsdoc-parsing
  * @tags jsdoc, parsing, indexer, tags, extraction, code-index
  */
-export function parseJSDocBlock(block: string, fileContent: string, blockStartIndex: number): ParsedJSDoc | null {
+export function parseJSDocBlock(block: string, fileContent: string, blockStartIndex: number, bodyRange?: BodyRange): ParsedJSDoc | null {
   const what = extractTag(block, 'what');
   const domain = extractTag(block, 'domain');
   if (!domain) return null;
@@ -163,7 +188,9 @@ export function parseJSDocBlock(block: string, fileContent: string, blockStartIn
   const lineNumber = fileContent.slice(0, blockEnd).split('\n').length;
 
   // Extract function body
-  const body = extractFunctionBody(fileContent, blockEnd);
+  const body = bodyRange
+    ? fileContent.slice(bodyRange.start, bodyRange.end).slice(0, 1000)
+    : extractFunctionBody(fileContent, blockEnd);
 
   return {
     name,
@@ -178,6 +205,7 @@ export function parseJSDocBlock(block: string, fileContent: string, blockStartIn
     lineNumber,
     body,
     blockEnd,
+    bodyRange,
   };
 }
 
@@ -916,14 +944,18 @@ export async function buildIndex(
     const pendingEmbeddings: { functionId: number; parsed: ParsedJSDoc; description: string }[] = [];
 
     // Wrap all synchronous DB inserts for this file in a transaction
-    const insertFileData = db.transaction(() => {
-      while ((jsdocMatch = jsdocRegex.exec(content)) !== null) {
-        foundAnyBlock = true;
-        const block = jsdocMatch[0];
-        const blockStartIndex = jsdocMatch.index;
+    // Real bodies come from the TypeScript parser; the brace scan is only a fallback.
+    const bodies = locateBodies(content, filePath);
+    const documented: { blockStart: number; parsed: ParsedJSDoc }[] = [];
+    while ((jsdocMatch = jsdocRegex.exec(content)) !== null) {
+      foundAnyBlock = true;
+      const blockEnd = jsdocMatch.index + jsdocMatch[0].length;
+      const parsed = parseJSDocBlock(jsdocMatch[0], content, jsdocMatch.index, bodyRangeAfter(content, bodies, blockEnd));
+      if (parsed) documented.push({ blockStart: jsdocMatch.index, parsed });
+    }
 
-        const parsed = parseJSDocBlock(block, content, blockStartIndex);
-        if (!parsed) continue;
+    const insertFileData = db.transaction(() => {
+      for (const { parsed } of documented) {
 
         const description = buildFullDescription(parsed);
         const funcId = insertFunction(db, {
@@ -943,9 +975,16 @@ export async function buildIndex(
         insertSystemLayers(db, funcId, parsed.systemlayers);
         stats.tier1Added++;
 
-        // Extract inline comments using the precise blockEnd position from parsing
-        const fullBody = extractFunctionBody(content, parsed.blockEnd!, 20000);
-        const comments = extractCommentsFromBody(fullBody);
+        // Extract inline comments from the real body. A nested documented function's
+        // comments (its JSDoc through its body) are blanked so each comment is indexed
+        // once, under the innermost documented function.
+        const range = parsed.bodyRange;
+        const commentBody = range
+          ? maskRanges(content.slice(range.start, range.end), range.start, documented
+            .filter(d => d.parsed.bodyRange && d.blockStart > range.start && d.parsed.bodyRange.end <= range.end)
+            .map(d => ({ start: d.blockStart, end: d.parsed.bodyRange!.end })))
+          : extractFunctionBody(content, parsed.blockEnd!, 20000);
+        const comments = extractCommentsFromBody(commentBody);
         if (comments.length > 0) {
           insertComments(db, funcId, comments.map(c => ({
             comment_text: c.text,

@@ -11,7 +11,7 @@
 import { existsSync } from 'fs';
 import { classifySearch } from './helpers/search-detection.js';
 import { recordSearchEvent } from './helpers/search-hint-state.js';
-import { countChangesSinceBuild } from './helpers/index-staleness.js';
+import { countChangesSinceBuild } from '../shared/index-staleness.js';
 import { resolveConfig } from '../config.js';
 
 const REMINDER =

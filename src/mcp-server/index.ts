@@ -30,6 +30,7 @@ import { buildIndex, readDirtyFiles, clearDirtyFiles } from './indexer.js';
 import { buildCallGraph } from './call-graph.js';
 import { buildPythonCallGraph } from './py-call-graph.js';
 import { createIndexAPI } from '../shared/index-api.js';
+import { countChangesSinceBuild } from '../shared/index-staleness.js';
 import { executeInSandbox } from './execute-sandbox.js';
 import { buildMetricsReport } from './metrics-query.js';
 import { createRequire } from 'module';
@@ -152,7 +153,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'index_status',
-    description: 'Get the current status of the code index: function counts by tier, domain/tag/systemlayer counts, last rebuild time, stale file count.',
+    description: 'Get the current status of the code index: function counts by tier, domain/tag/systemlayer counts, last rebuild time, and how many indexed files commits have changed since the last build.',
     inputSchema: {
       type: 'object' as const,
       properties: {},
@@ -552,8 +553,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'index_status': {
-        const dirtyFiles = readDirtyFiles(DIRTY_FILES_PATH);
-        const meta = getIndexMetadata(db, dirtyFiles.length);
+        // Git-based, the same count the search hint uses (nothing writes .dirty-files).
+        const changedSinceBuild = countChangesSinceBuild(config.projectRoot, config.databasePath, {
+          extensions: config.fileExtensions,
+          sourceDirectories: config.sourceDirectories,
+          docsDirectories: config.docsDirectories,
+        }, 5000);
+        const meta = getIndexMetadata(db, changedSinceBuild);
 
         return {
           content: [{
@@ -578,7 +584,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               `- **Call edges:** ${meta.call_edges_count}`,
               `- **Inline comments:** ${meta.comments_count}`,
               `- **Doc sections:** ${meta.doc_sections_count}`,
-              `- **Stale files:** ${meta.stale_files}`,
+              `- **Files changed since last build (committed, per git):** ${meta.stale_files}`,
             ].join('\n'),
           }],
         };
