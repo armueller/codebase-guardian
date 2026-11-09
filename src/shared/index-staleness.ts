@@ -58,11 +58,12 @@ function buildPathspecs(scope: StalenessScope): string[] {
 /**
  * @what Counts indexed files changed by commits landed since the index was last built
  * @how Uses the index db's mtime as the last-build time and runs a time-bounded `git log --since=<mtime> --name-only` over pathspecs derived from the indexing config, returning the count of distinct changed files; returns 0 on any failure or timeout
- * @why Lets the search-hint hook append a "run rebuild_index" suggestion only when enough has landed to make the index meaningfully stale, without opening the SQLite db and without risk of a long block
+ * @why Lets the search-hint hook append a "run rebuild_index" suggestion only when enough has landed to make the index meaningfully stale, without opening the SQLite db and without risk of a long block; index_status reports the same count so the two never disagree
  *
  * @param {string} projectRoot Absolute path to the project (git) root
  * @param {string} databasePath Absolute path to the project's code-quality.db (its mtime ≈ last build)
  * @param {StalenessScope} scope The indexing extensions/directories used to scope the count
+ * @param {number} [timeoutMs] Limit for the git call; the hook keeps the 500ms default, index_status can afford longer
  * @returns {number} Count of distinct indexed files changed since the last build (0 on any error/timeout)
  *
  * @sideeffects Reads the db file's mtime and spawns a short, timeout-bounded `git log`
@@ -70,13 +71,13 @@ function buildPathspecs(scope: StalenessScope): string[] {
  * @domain search-hint, index-staleness, git
  * @tags staleness, git-log, rebuild-hint, fail-safe
  */
-export function countChangesSinceBuild(projectRoot: string, databasePath: string, scope: StalenessScope): number {
+export function countChangesSinceBuild(projectRoot: string, databasePath: string, scope: StalenessScope, timeoutMs: number = GIT_TIMEOUT_MS): number {
   try {
     const builtAt = statSync(databasePath).mtime.toISOString();
     const out = execFileSync(
       'git',
       ['-C', projectRoot, 'log', `--since=${builtAt}`, '--name-only', '--pretty=format:', '--', ...buildPathspecs(scope)],
-      { encoding: 'utf-8', timeout: GIT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'] }
+      { encoding: 'utf-8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'ignore'] }
     );
     const files = new Set(out.split('\n').map(s => s.trim()).filter(Boolean));
     return files.size;

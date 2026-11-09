@@ -49,6 +49,7 @@ src/
 │   ├── index.ts            # Tool handlers + server setup
 │   ├── db.ts               # SQLite schema + CRUD (better-sqlite3)
 │   ├── indexer.ts           # Phase 1: JSDoc & doc parsing + Python module/unit indexing
+│   ├── ts-bodies.ts         # TypeScript-parser body ranges (inline comments + body embeddings); text brace scan is only the fallback
 │   ├── call-graph.ts        # Phase 2: TS call graph + export discovery (ts-morph)
 │   ├── py-index.ts          # Python extraction bridge: guardian_py `extract` → raw JSON for the indexer
 │   ├── py-call-graph.ts     # Python call graph: guardian_py `callgraph` (Jedi) → call_edges rows
@@ -128,7 +129,7 @@ A **second, independent PreToolUse hook** (matcher `Grep|Glob|Bash|mcp__codebase
 
 - **`helpers/search-detection.ts`** (pure): classifies a call as `semantic` / `grep-search` / `none`. The Bash branch parses pipeline stages to fire on real codebase searches (`rg`, `grep -r`, `git grep`, `find -name`, `fd`) but skip pipe filters (`ps | grep`), single-file greps, and non-search `find`.
 - **`helpers/search-hint-state.ts`**: per-session throttle in `${guardianHome}/.search-hint-state.json` (global, so the frequent path needs no git resolution). Nudge once, re-arm after `rearmAfter` (default 10) grep searches **without** a semantic search; a semantic search resets the counter. Keyed by session id → survives context compaction.
-- **`helpers/index-staleness.ts`**: on a nudge, uses the index db's mtime + `git log --since` over pathspecs **derived from the project's indexing config** (source dirs × configured `fileExtensions`, plus doc dirs × `.md`) to append a `rebuild_index` suggestion when ≥ `stalenessThreshold` (default 15) files have landed since the last build. `.dirty-files` is unused (nothing populates it), which is why staleness is computed from git, not that.
+- **`src/shared/index-staleness.ts`** (also used by `index_status`, so the two counts agree): on a nudge, uses the index db's mtime + `git log --since` over pathspecs **derived from the project's indexing config** (source dirs × configured `fileExtensions`, plus doc dirs × `.md`) to append a `rebuild_index` suggestion when ≥ `stalenessThreshold` (default 15) files have landed since the last build. `.dirty-files` is unused (nothing populates it), which is why staleness is computed from git, not that.
 - Gated: no nudge unless the cwd project has an index. Fail-open: any error → no output. Config knobs live under `searchHint` in `guardian.config.json`.
 
 ### Function Extractor (`function-extractor.ts`)
