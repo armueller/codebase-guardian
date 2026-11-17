@@ -17,6 +17,11 @@ import os from 'os';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+/**
+ * @what Fully resolved Guardian configuration for one project: paths, scan settings, the tsconfig resolution and any guardian.config.json parse error
+ * @domain config
+ * @tags guardian-config, resolved-config, settings, tsconfig
+ */
 export interface GuardianConfig {
   /** Absolute path to the project root (git root or cwd) */
   projectRoot: string;
@@ -50,10 +55,35 @@ export interface GuardianConfig {
     rearmAfter: number;
     stalenessThreshold: number;
   };
+  /** Which tsconfig the TypeScript call graph and source-directory detection use */
+  tsconfig: TsconfigResolution;
+  /** Parse error for a guardian.config.json that exists but could not be read as JSON, else null */
+  configFileError: string | null;
 }
 
-/** Shape of guardian.config.json (all fields optional) */
+/**
+ * @what Outcome of deciding which tsconfig applies to a project
+ *
+ * - `file`: an existing file, either the configured one or `<root>/tsconfig.json`
+ * - `none`: nothing configured and no `<root>/tsconfig.json`
+ * - `invalid`: configured but unusable; consumers must report the reason and never fall back to another file
+ *
+ * @domain config, call-graph
+ * @tags tsconfig, guardian-config, discriminated-union, resolution
+ */
+export type TsconfigResolution =
+  | { kind: 'file'; path: string }
+  | { kind: 'none' }
+  | { kind: 'invalid'; reason: string };
+
+/**
+ * @what Shape of guardian.config.json as read from disk (all fields optional; `tsconfig` is typed unknown until validated)
+ * @domain config
+ * @tags guardian-config, config-file, json, user-settings
+ */
 interface GuardianConfigFile {
+  /** Path to the tsconfig, relative to the project root. Typed unknown: it is validated, not trusted. */
+  tsconfig?: unknown;
   sourceDirectories?: string[];
   docsDirectories?: string[];
   excludeDirectories?: string[];
@@ -72,9 +102,11 @@ interface GuardianConfigFile {
 
 // ─── Defaults ────────────────────────────────────────────────────────────────
 
-const DEFAULT_EXCLUDE = [
-  'node_modules', 'dist', '.claude', 'cdk.out', 'build',
-  '__snapshots__', '.next', '.turbo', 'coverage',
+// Folders left out of the index unless guardian.config.json sets its own excludeDirectories
+// (which replaces this list). Common non-source folders plus Python virtualenvs and caches.
+export const DEFAULT_EXCLUDE = [
+  'node_modules', 'dist', '.claude', 'cdk.out', 'build', '__snapshots__', '.next', '.turbo', 'coverage',
+  '.venv', '__pycache__', '.pytest_cache', 'site-packages', '.mypy_cache', '.ruff_cache',
 ];
 
 const DEFAULT_EXTENSIONS = ['.ts', '.tsx', '.py'];
@@ -166,29 +198,72 @@ export function hashProjectRoot(projectRoot: string): string {
 // ─── Source Directory Detection ──────────────────────────────────────────────
 
 /**
- * Auto-detects source directories for a project.
- * Checks tsconfig.json includes, then falls back to common patterns.
+ * @what Decides which tsconfig applies to a project: the configured one, the root one, none, or invalid
+ * @how A `tsconfig` value in guardian.config.json must be a non-empty string naming an existing file (resolved against the project root); anything else configured is `invalid` with a reason. With nothing configured, `<root>/tsconfig.json` is used when it exists, else `none`.
+ * @why The TypeScript app may live in a sub-folder with no tsconfig at the git root. A configured path that is wrong must be reported, never silently replaced by another file.
+ *
+ * @param {string} projectRoot Absolute project root
+ * @param {unknown} configured The raw `tsconfig` value from guardian.config.json (undefined when absent)
+ * @returns {TsconfigResolution} `file` with an absolute path, `none`, or `invalid` with a reason
+ *
+ * @sideeffects Reads the filesystem (existence checks only)
+ * @systemlayer Configuration
+ * @domain config, call-graph
+ * @tags tsconfig, guardian-config, resolution, monorepo, validation
  */
-function detectSourceDirectories(projectRoot: string): string[] {
-  // Try tsconfig.json includes
-  const tsconfigPath = path.join(projectRoot, 'tsconfig.json');
-  if (fs.existsSync(tsconfigPath)) {
+function resolveTsconfig(projectRoot: string, configured: unknown): TsconfigResolution {
+  if (configured !== undefined) {
+    if (typeof configured !== 'string' || configured.trim() === '') {
+      return {
+        kind: 'invalid',
+        reason: `"tsconfig" in guardian.config.json must be a non-empty string (got ${JSON.stringify(configured)})`,
+      };
+    }
+    const configuredPath = path.resolve(projectRoot, configured);
+    if (!fs.existsSync(configuredPath)) {
+      return { kind: 'invalid', reason: `tsconfig "${configured}" from guardian.config.json does not exist` };
+    }
+    return { kind: 'file', path: configuredPath };
+  }
+
+  const rootPath = path.join(projectRoot, 'tsconfig.json');
+  if (fs.existsSync(rootPath)) return { kind: 'file', path: rootPath };
+  return { kind: 'none' };
+}
+
+/**
+ * @what Auto-detects the source directories of a project, relative to the project root
+ * @how Takes the first path segment of each `include` pattern in the given tsconfig, placed under that tsconfig's folder, and keeps those that exist. If that yields nothing, tries src/app/lib/packages under the same folder. If that also yields nothing, returns the tsconfig's folder itself, or '.' when the tsconfig is at the root or absent.
+ * @why Only runs when guardian.config.json does not set sourceDirectories. Following the resolved tsconfig keeps one notion of "the project's tsconfig" shared with the call graph.
+ *
+ * @param {string} projectRoot Absolute project root
+ * @param {string | null} tsconfigFile Absolute path of the resolved tsconfig, or null when there is none
+ * @returns {string[]} Source directories relative to the project root ('/'-separated)
+ *
+ * @sideeffects Reads the tsconfig file and checks folder existence
+ * @systemlayer Configuration
+ * @domain config, code-index
+ * @tags tsconfig, source-directories, auto-detection, monorepo
+ */
+function detectSourceDirectories(projectRoot: string, tsconfigFile: string | null): string[] {
+  const base = tsconfigFile
+    ? path.relative(projectRoot, path.dirname(tsconfigFile)).split(path.sep).join('/')
+    : '';
+  const underBase = (dir: string): string => (base ? `${base}/${dir}` : dir);
+  const existsUnderBase = (dir: string): boolean => fs.existsSync(path.join(projectRoot, underBase(dir)));
+
+  if (tsconfigFile) {
     try {
-      const tsconfig = JSON.parse(fs.readFileSync(tsconfigPath, 'utf-8'));
+      const tsconfig = JSON.parse(fs.readFileSync(tsconfigFile, 'utf-8'));
       if (tsconfig.include && Array.isArray(tsconfig.include)) {
         // Extract directory prefixes from include patterns like "src/**/*", "app/**/*"
-        const dirs = tsconfig.include
+        const dirs: string[] = tsconfig.include
           .map((pattern: string) => pattern.split('/')[0])
           .filter((dir: string) => !dir.startsWith('.') && dir !== '*' && dir !== '**')
           .filter((dir: string, i: number, arr: string[]) => arr.indexOf(dir) === i);
 
-        if (dirs.length > 0) {
-          // Verify directories actually exist
-          const existing = dirs.filter((dir: string) =>
-            fs.existsSync(path.join(projectRoot, dir))
-          );
-          if (existing.length > 0) return existing;
-        }
+        const existing = dirs.filter(existsUnderBase).map(underBase);
+        if (existing.length > 0) return existing;
       }
     } catch {
       // Invalid tsconfig — fall through
@@ -196,12 +271,10 @@ function detectSourceDirectories(projectRoot: string): string[] {
   }
 
   // Fall back to common directory patterns
-  const candidates = ['src', 'app', 'lib', 'packages'];
-  const found = candidates.filter(dir =>
-    fs.existsSync(path.join(projectRoot, dir))
-  );
+  const found = ['src', 'app', 'lib', 'packages'].filter(existsUnderBase).map(underBase);
+  if (found.length > 0) return found;
 
-  return found.length > 0 ? found : ['.'];
+  return [base || '.'];
 }
 
 /**
@@ -237,16 +310,26 @@ function detectProjectName(projectRoot: string): string {
 // ─── Config File Loading ─────────────────────────────────────────────────────
 
 /**
- * Loads guardian.config.json from the project root if it exists.
+ * @what Loads guardian.config.json from the project root, keeping the parse error when it cannot be read
+ * @how Returns `{ file: null, error: null }` when the file is absent, the parsed object when it is valid JSON, and `{ file: null, error }` when reading or parsing throws
+ * @why A config file that exists but is ignored must be reportable. Returning only null made a broken file indistinguishable from a missing one.
+ *
+ * @param {string} projectRoot Absolute project root
+ * @returns {{ file: GuardianConfigFile | null; error: string | null }} Parsed config and the parse error, if any
+ *
+ * @sideeffects Reads guardian.config.json from disk
+ * @systemlayer Configuration
+ * @domain config
+ * @tags guardian-config, json, parse-error, fail-open
  */
-function loadConfigFile(projectRoot: string): GuardianConfigFile | null {
+function loadConfigFile(projectRoot: string): { file: GuardianConfigFile | null; error: string | null } {
   const configPath = path.join(projectRoot, 'guardian.config.json');
-  if (!fs.existsSync(configPath)) return null;
+  if (!fs.existsSync(configPath)) return { file: null, error: null };
 
   try {
-    return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-  } catch {
-    return null;
+    return { file: JSON.parse(fs.readFileSync(configPath, 'utf-8')), error: null };
+  } catch (err) {
+    return { file: null, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -260,14 +343,19 @@ const configCache = new Map<string, GuardianConfig>();
 // ─── Main Resolver ───────────────────────────────────────────────────────────
 
 /**
- * Resolves the full GuardianConfig for a project.
+ * @what Resolves the GuardianConfig for the project containing fromPath, cached per project root
+ * @how Detects the project root (file-path walk-up, or GUARDIAN_PROJECT_ROOT / git / cwd), returns the cached config for that root, or builds it with reloadConfig on a cache miss
+ * @why The hook calls this from many module-level initializers; caching avoids a git subprocess per call. Long-lived callers that must see config changes use reloadConfig instead.
  *
- * Results are cached by resolved project root, so repeated calls
- * (e.g., from multiple module-level initializations) are free after the first.
- *
- * @param fromPath Optional path to resolve from (file path or directory).
+ * @param {string} [fromPath] Optional path to resolve from (file path or directory).
  *   If a file path, walks up to find the project root.
  *   If omitted, uses GUARDIAN_PROJECT_ROOT or git root or cwd.
+ * @returns {GuardianConfig} Resolved config, including the tsconfig resolution and configFileError
+ *
+ * @sideeffects Spawns git rev-parse during root detection; on a cache miss reads config files and fills the module-level config cache (via reloadConfig)
+ * @systemlayer Configuration
+ * @domain config
+ * @tags guardian-config, cache, project-root, resolution, auto-detection
  */
 export function resolveConfig(fromPath?: string): GuardianConfig {
   // Detect project root.
@@ -287,11 +375,29 @@ export function resolveConfig(fromPath?: string): GuardianConfig {
   const cached = configCache.get(projectRoot);
   if (cached) return cached;
 
-  // Load optional config file
-  const configFile = loadConfigFile(projectRoot);
+  return reloadConfig(projectRoot);
+}
 
-  // Detect project name
+/**
+ * @what Rebuilds the GuardianConfig for a known project root from disk and replaces its cache entry
+ * @how Re-reads guardian.config.json (recording a parse error on the config), resolves the tsconfig (recording an invalid one with its reason), re-runs auto-detection for unset fields without re-detecting the root itself, then overwrites the cached config so later resolveConfig calls for that root see the fresh one
+ * @why resolveConfig caches for the life of the process, which is right for the short-lived hook but wrong for the long-lived MCP server: a config file written after startup was ignored until the server restarted
+ *
+ * @param {string} projectRoot Absolute project root, as previously detected
+ * @returns {GuardianConfig} The freshly built config
+ *
+ * @sideeffects Reads guardian.config.json, tsconfig.json and package.json; checks folder existence; mutates the module-level config cache
+ * @systemlayer Configuration
+ * @domain config, mcp-server
+ * @tags guardian-config, cache, reload, staleness, mcp-server
+ */
+export function reloadConfig(projectRoot: string): GuardianConfig {
+  const { file: configFile, error: configFileError } = loadConfigFile(projectRoot);
+
   const projectName = detectProjectName(projectRoot);
+
+  const tsconfig = resolveTsconfig(projectRoot, configFile?.tsconfig);
+  const tsconfigFile = tsconfig.kind === 'file' ? tsconfig.path : null;
 
   // Resolve paths
   const guardianHome = getGuardianHome();
@@ -305,7 +411,7 @@ export function resolveConfig(fromPath?: string): GuardianConfig {
     projectRoot,
     projectName,
 
-    sourceDirectories: configFile?.sourceDirectories ?? detectSourceDirectories(projectRoot),
+    sourceDirectories: configFile?.sourceDirectories ?? detectSourceDirectories(projectRoot, tsconfigFile),
     docsDirectories: configFile?.docsDirectories ?? detectDocsDirectories(projectRoot),
     excludeDirectories: configFile?.excludeDirectories ?? DEFAULT_EXCLUDE,
     fileExtensions: configFile?.fileExtensions ?? DEFAULT_EXTENSIONS,
@@ -325,6 +431,8 @@ export function resolveConfig(fromPath?: string): GuardianConfig {
       rearmAfter: configFile?.searchHint?.rearmAfter ?? DEFAULT_SEARCH_HINT.rearmAfter,
       stalenessThreshold: configFile?.searchHint?.stalenessThreshold ?? DEFAULT_SEARCH_HINT.stalenessThreshold,
     },
+    tsconfig,
+    configFileError,
   };
 
   configCache.set(projectRoot, config);
