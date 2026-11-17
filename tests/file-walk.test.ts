@@ -1,10 +1,14 @@
-import { describe, it, before } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import { reloadConfig } from '../src/config.js';
-import { listIndexFiles, isExcludedDir, missingConfiguredDirectories } from '../src/mcp-server/file-walk.js';
+import {
+  listIndexFiles, isExcludedDir, isExcludedPath, classifyIndexFile, configuredDirectoryProblems,
+} from '../src/mcp-server/file-walk.js';
+import { makeTempDir, cleanupTempDirs } from './helpers/ts-subdir-repo.js';
+
+after(cleanupTempDirs);
 
 // Built at test time, not committed as a fixture: .gitignore drops node_modules/.
 const TREE = [
@@ -30,7 +34,7 @@ function list(configFile: Record<string, unknown>): { codeFiles: string[]; docFi
 
 describe('listIndexFiles', () => {
   before(() => {
-    root = mkdtempSync(path.join(tmpdir(), 'guardian-file-walk-'));
+    root = makeTempDir('guardian-file-walk-');
     for (const file of TREE) {
       const full = path.join(root, file);
       mkdirSync(path.dirname(full), { recursive: true });
@@ -79,9 +83,9 @@ describe('listIndexFiles', () => {
   });
 });
 
-describe('missingConfiguredDirectories', () => {
-  it('names configured source and docs directories that do not exist', () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'guardian-missing-dirs-'));
+describe('configuredDirectoryProblems', () => {
+  it('says what is wrong with each configured source or docs directory', () => {
+    const dir = makeTempDir('guardian-dir-problems-');
     mkdirSync(path.join(dir, 'web/app'), { recursive: true });
     mkdirSync(path.join(dir, 'docs'));
     writeFileSync(path.join(dir, 'notadir'), '');
@@ -89,12 +93,97 @@ describe('missingConfiguredDirectories', () => {
       sourceDirectories: ['web/app', 'web/ap', 'notadir'],
       docsDirectories: ['docs', 'dox'],
     }));
-    assert.deepEqual(missingConfiguredDirectories(reloadConfig(dir)), ['web/ap', 'notadir', 'dox']);
+    assert.deepEqual(configuredDirectoryProblems(reloadConfig(dir)), [
+      'configured directory does not exist: web/ap',
+      'configured directory is a file, not a folder: notadir',
+      'configured directory does not exist: dox',
+    ]);
   });
 
   it('is empty when every configured directory exists', () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'guardian-missing-dirs-'));
-    assert.deepEqual(missingConfiguredDirectories(reloadConfig(dir)), []);
+    const dir = makeTempDir('guardian-dir-problems-');
+    assert.deepEqual(configuredDirectoryProblems(reloadConfig(dir)), []);
+  });
+});
+
+describe('unreadable directories', () => {
+  it('are listed, not skipped silently', { skip: process.getuid?.() === 0 }, () => {
+    const dir = makeTempDir('guardian-unreadable-');
+    mkdirSync(path.join(dir, 'src/locked'), { recursive: true });
+    writeFileSync(path.join(dir, 'src/a.ts'), '// a\n');
+    writeFileSync(path.join(dir, 'src/locked/b.ts'), '// b\n');
+    writeFileSync(path.join(dir, 'guardian.config.json'), JSON.stringify({ sourceDirectories: ['src'] }));
+    chmodSync(path.join(dir, 'src/locked'), 0o000);
+    try {
+      const set = listIndexFiles(reloadConfig(dir));
+      assert.deepEqual(set.codeFiles.map(f => path.relative(dir, f)), ['src/a.ts']);
+      assert.deepEqual(set.unreadableDirectories, ['src/locked']);
+    } finally {
+      chmodSync(path.join(dir, 'src/locked'), 0o755);
+    }
+  });
+
+  it('is an empty list when everything can be read', () => {
+    const dir = makeTempDir('guardian-unreadable-');
+    assert.deepEqual(listIndexFiles(reloadConfig(dir)).unreadableDirectories, []);
+  });
+});
+
+describe('classifyIndexFile', () => {
+  it('gives every file the verdict a full walk would', () => {
+    const dir = makeTempDir('guardian-classify-');
+    writeFileSync(path.join(dir, 'guardian.config.json'), JSON.stringify({
+      sourceDirectories: ['src', 'tests/support'],
+      docsDirectories: ['docs'],
+      excludeDirectories: ['generated'],
+      fileExtensions: ['.ts', '.py'],
+    }));
+    const config = reloadConfig(dir);
+    const verdict = (rel: string): string | null => classifyIndexFile(path.join(dir, rel), config);
+
+    assert.equal(verdict('src/a.ts'), 'code');
+    assert.equal(verdict('src/deep/b.py'), 'code');
+    assert.equal(verdict('src/view.tsx'), null, 'extension not configured');
+    assert.equal(verdict('src/a.test.ts'), null, 'test file');
+    assert.equal(verdict('src/generated/g.ts'), null, 'excluded by the project');
+    assert.equal(verdict('src/node_modules/p/x.ts'), null, 'excluded by default');
+    assert.equal(verdict('scripts/x.ts'), null, 'outside the source directories');
+    // The Python test-file rule is judged from the source directory, as the walk does.
+    assert.equal(verdict('tests/support/helper.py'), 'code');
+    assert.equal(verdict('src/tests/helper.py'), null);
+
+    assert.equal(verdict('docs/guide.md'), 'doc');
+    assert.equal(verdict('docs/generated/api.md'), null);
+    assert.equal(verdict('src/README.md'), 'doc');
+    assert.equal(verdict('src/deep/readme.md'), 'doc');
+    assert.equal(verdict('src/NOTES.md'), null, 'only READMEs are read from source directories');
+    assert.equal(verdict('CHANGELOG.md'), null);
+  });
+
+  it('agrees with listIndexFiles on a real tree', () => {
+    const dir = makeTempDir('guardian-classify-');
+    for (const file of ['src/a.ts', 'src/a.test.ts', 'src/build/y.ts', 'src/README.md', 'docs/g.md', 'other/x.ts']) {
+      mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+      writeFileSync(path.join(dir, file), '// x\n');
+    }
+    writeFileSync(path.join(dir, 'guardian.config.json'), JSON.stringify({ sourceDirectories: ['src'], docsDirectories: ['docs'] }));
+    const config = reloadConfig(dir);
+    const set = listIndexFiles(config);
+    for (const file of set.codeFiles) assert.equal(classifyIndexFile(file, config), 'code', file);
+    for (const file of set.docFiles) assert.equal(classifyIndexFile(file, config), 'doc', file);
+    for (const rel of ['src/a.test.ts', 'src/build/y.ts', 'other/x.ts']) {
+      assert.equal(classifyIndexFile(path.join(dir, rel), config), null, rel);
+    }
+  });
+});
+
+describe('isExcludedPath', () => {
+  it('is true for a file under an excluded folder at any level', () => {
+    const scope = { projectRoot: '/repo', exclude: ['node_modules', 'web/data'] };
+    assert.equal(isExcludedPath('/repo/web/app/node_modules/p/x.ts', scope), true);
+    assert.equal(isExcludedPath('/repo/web/data/seed.ts', scope), true);
+    assert.equal(isExcludedPath('/repo/web/app/data/keep.ts', scope), false);
+    assert.equal(isExcludedPath('/repo/web/app/a.ts', scope), false);
   });
 });
 

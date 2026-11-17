@@ -160,3 +160,57 @@ def test_resolve_callee_swallows_exception_from_line_access():
 
     result = _resolve_callee(_StubScriptRaisesOnLineAccess(), 1, 0, PKG)
     assert result == (None, None)
+
+
+def _make_tree(tmp_path):
+    """A package with one module at the top, one in generated/, one in web/data/, one in nested/data/."""
+    for rel in ("top.py", "generated/gen.py", "web/data/seed.py", "nested/data/keep.py"):
+        target = os.path.join(str(tmp_path), rel)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write("def helper():\n    return 1\n\n\ndef caller():\n    return helper()\n")
+    return str(tmp_path)
+
+
+def _caller_files(root, *extra_args):
+    proc = _run("callgraph", root, *extra_args)
+    assert proc.returncode == 0
+    payload = json.loads(proc.stdout)
+    assert "error" not in payload
+    return sorted({os.path.relpath(e["caller_file"], root) for e in payload["edges"]})
+
+
+def test_callgraph_walks_everything_not_on_the_default_list(tmp_path):
+    root = _make_tree(tmp_path)
+    assert _caller_files(root) == ["generated/gen.py", "nested/data/keep.py", "top.py", "web/data/seed.py"]
+
+
+def test_callgraph_exclude_bare_name_matches_at_any_depth(tmp_path):
+    root = _make_tree(tmp_path)
+    assert _caller_files(root, "--exclude", "data") == ["generated/gen.py", "top.py"]
+
+
+def test_callgraph_exclude_path_matches_only_that_path(tmp_path):
+    root = _make_tree(tmp_path)
+    assert _caller_files(root, "--exclude", "web/data", "--exclude", "generated") == ["nested/data/keep.py", "top.py"]
+
+
+def test_callgraph_exclude_dot_slash_name_is_top_level_only(tmp_path):
+    root = _make_tree(tmp_path)
+    os.makedirs(os.path.join(root, "data"))
+    with open(os.path.join(root, "data", "root_data.py"), "w", encoding="utf-8") as fh:
+        fh.write("def helper():\n    return 1\n\n\ndef caller():\n    return helper()\n")
+    assert _caller_files(root, "--exclude", "./data") == [
+        "generated/gen.py", "nested/data/keep.py", "top.py", "web/data/seed.py",
+    ]
+
+
+def test_callgraph_explicit_exclude_list_replaces_the_built_in_one(tmp_path):
+    # Node always passes the project's full list (built-ins plus its own), so an explicit list is
+    # the whole list: a folder on the built-in list is walked when the caller leaves it out.
+    root = _make_tree(tmp_path)
+    os.makedirs(os.path.join(root, "build"))
+    with open(os.path.join(root, "build", "out.py"), "w", encoding="utf-8") as fh:
+        fh.write("def helper():\n    return 1\n\n\ndef caller():\n    return helper()\n")
+    assert "build/out.py" not in _caller_files(root)
+    assert "build/out.py" in _caller_files(root, "--exclude", "generated")

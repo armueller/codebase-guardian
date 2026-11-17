@@ -2,7 +2,7 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { buildPythonCallGraph } from '../src/mcp-server/py-call-graph.js';
+import { buildPythonCallGraph, callgraphArgs } from '../src/mcp-server/py-call-graph.js';
 import { openDatabase, getFunctionByFileAndLine, getFunctionByName } from '../src/mcp-server/db.js';
 import { buildIndex } from '../src/mcp-server/indexer.js';
 
@@ -96,5 +96,17 @@ describe('buildPythonCallGraph', () => {
         process.env.GUARDIAN_HOME = originalGuardianHome;
       }
     }
+  });
+});
+
+describe('callgraphArgs', () => {
+  it('passes the project exclude list to guardian_py, one --exclude per entry', () => {
+    assert.deepEqual(callgraphArgs('/repo', ['node_modules', 'web/data']), [
+      '-m', 'guardian_py', 'callgraph', '/repo', '--exclude', 'node_modules', '--exclude', 'web/data',
+    ]);
+  });
+
+  it('passes no --exclude for an empty list, so the helper uses its built-in list', () => {
+    assert.deepEqual(callgraphArgs('/repo', []), ['-m', 'guardian_py', 'callgraph', '/repo']);
   });
 });

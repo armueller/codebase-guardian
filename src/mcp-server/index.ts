@@ -25,7 +25,7 @@ import {
 } from './db.js';
 import { semanticSearch, invalidateCache } from './embeddings.js';
 import { buildIndex, readDirtyFiles, clearDirtyFiles } from './indexer.js';
-import { runRebuild, formatRebuildReport } from './rebuild.js';
+import { runRebuild, formatRebuildReport, readLastRebuildStatus } from './rebuild.js';
 import { createIndexAPI } from '../shared/index-api.js';
 import { countChangesSinceBuild } from '../shared/index-staleness.js';
 import { executeInSandbox } from './execute-sandbox.js';
@@ -483,9 +483,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         return {
           content: [{ type: 'text', text: formatRebuildReport(result).join('\n') }],
-          // An error only when the index itself is not trustworthy. A degraded or failed
-          // call graph is a problem stated in a usable result.
-          isError: result.indexingFailed,
+          // An error when no usable rebuild happened: the configuration was broken so it did
+          // not start, or clearing/indexing failed. A degraded or failed call graph is a
+          // problem stated in a usable result.
+          isError: result.indexingFailed || result.notStarted !== null,
         };
       }
 
@@ -564,6 +565,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               '',
               `**Last rebuilt:** ${meta.last_rebuilt || 'Never'}`,
               `**Files scanned:** ${meta.files_scanned}`,
+              // What the last rebuild reported per phase, so a degraded or failed rebuild is
+              // still visible here and not only in the one response that returned it.
+              ...(readLastRebuildStatus(db) ?? []),
               '',
               '### Function Counts',
               `- **Tier 1 (JSDoc annotated):** ${meta.tier1_count}`,

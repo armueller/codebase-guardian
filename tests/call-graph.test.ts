@@ -1,12 +1,15 @@
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { reloadConfig } from '../src/config.js';
 import { openDatabase, getFunctionByName } from '../src/mcp-server/db.js';
 import { buildIndex } from '../src/mcp-server/indexer.js';
-import { buildCallGraph } from '../src/mcp-server/call-graph.js';
-import { makeTsSubdirRepo, TS_SUBDIR_FILES } from './helpers/ts-subdir-repo.js';
+import { buildCallGraph, checkTsconfigLoads } from '../src/mcp-server/call-graph.js';
+import { listIndexFiles } from '../src/mcp-server/file-walk.js';
+import { makeTsSubdirRepo, makeTempDir, cleanupTempDirs, TS_SUBDIR_FILES } from './helpers/ts-subdir-repo.js';
+
+after(cleanupTempDirs);
 
 type Db = ReturnType<typeof openDatabase>;
 
@@ -170,6 +173,106 @@ describe('buildCallGraph with a tsconfig outside the git root', () => {
       status: 'ok',
       note: 'no TypeScript files in the source directories',
     });
+    db.close();
+  });
+});
+
+describe('buildCallGraph: a tsconfig that loads but does not give the whole picture', () => {
+  it('is degraded when the tsconfig extends a file that is missing', async () => {
+    const root = makeTsSubdirRepo({
+      ...configFile({ sourceDirectories: ['web/app'], tsconfig: 'web/tsconfig.json' }),
+      'web/tsconfig.json': JSON.stringify({ extends: './missing-base.json', compilerOptions: { strict: true } }),
+    });
+    const { db, result } = await build(root);
+
+    assert.equal(result.status, 'degraded');
+    assert.match(result.note ?? '', /^tsconfig "web\/tsconfig\.json" was loaded with errors, so settings from it may be missing: /);
+    assert.equal(result.exportsDiscovered, 4, 'the graph is still built');
+    db.close();
+  });
+
+  it('is degraded for a solution-style tsconfig that defines no paths of its own', async () => {
+    const root = makeTsSubdirRepo({
+      ...configFile({ sourceDirectories: ['web/app'], tsconfig: 'web/tsconfig.json' }),
+      'web/tsconfig.json': JSON.stringify({ files: [], references: [{ path: './tsconfig.app.json' }] }),
+      'web/tsconfig.app.json': TS_SUBDIR_FILES['web/tsconfig.json'],
+    });
+    const { db, result } = await build(root);
+
+    assert.equal(result.status, 'degraded');
+    assert.match(result.note ?? '', /^tsconfig "web\/tsconfig\.json" is solution-style/);
+    assert.match(result.note ?? '', /Point "tsconfig" at the referenced file/);
+    assert.equal(hasEdge(db, RUN, GREET_LIB), false, 'the alias in the referenced file was not loaded');
+    db.close();
+  });
+
+  it('is ok for a tsconfig with references that also defines its own paths', async () => {
+    const withRefs = JSON.parse(TS_SUBDIR_FILES['web/tsconfig.json']);
+    withRefs.references = [{ path: './tsconfig.node.json' }];
+    const root = makeTsSubdirRepo({
+      ...configFile({ sourceDirectories: ['web/app'], tsconfig: 'web/tsconfig.json' }),
+      'web/tsconfig.json': JSON.stringify(withRefs),
+      'web/tsconfig.node.json': '{}',
+    });
+    const { db, result } = await build(root);
+
+    assert.equal(result.status, 'ok');
+    assert.equal(hasEdge(db, RUN, GREET_LIB), true);
+    db.close();
+  });
+
+  it('is ok when pointed at the referenced file directly', async () => {
+    const root = makeTsSubdirRepo({
+      ...configFile({ sourceDirectories: ['web/app'], tsconfig: 'web/tsconfig.app.json' }),
+      'web/tsconfig.json': JSON.stringify({ files: [], references: [{ path: './tsconfig.app.json' }] }),
+      'web/tsconfig.app.json': TS_SUBDIR_FILES['web/tsconfig.json'],
+    });
+    const { db, result } = await build(root);
+
+    assert.equal(result.status, 'ok');
+    assert.equal(hasEdge(db, RUN, GREET_LIB), true);
+    db.close();
+  });
+});
+
+describe('checkTsconfigLoads', () => {
+  it('is null when the tsconfig loads, and when there is none', () => {
+    const withTsconfig = makeTsSubdirRepo(configFile({ sourceDirectories: ['web/app'], tsconfig: 'web/tsconfig.json' }));
+    assert.equal(checkTsconfigLoads(reloadConfig(withTsconfig)), null);
+    assert.equal(checkTsconfigLoads(reloadConfig(makeTempDir('guardian-no-tsconfig-'))), null);
+  });
+
+  it('gives the reason, naming the file, when the tsconfig cannot be loaded', () => {
+    const root = makeTsSubdirRepo({
+      ...configFile({ sourceDirectories: ['web/app'], tsconfig: 'web/tsconfig.json' }),
+      'web/tsconfig.json': '{ not json',
+    });
+    assert.match(checkTsconfigLoads(reloadConfig(root)) ?? '', /^could not load tsconfig "web\/tsconfig\.json": .+/);
+  });
+});
+
+describe('buildCallGraph with an explicit file list', () => {
+  it('loads exactly the TypeScript files it is given', async () => {
+    const root = makeTsSubdirRepo(configFile({ sourceDirectories: ['web/app'], tsconfig: 'web/tsconfig.json' }));
+    const config = reloadConfig(root);
+    const all = listIndexFiles(config);
+    const files = { ...all, codeFiles: all.codeFiles.filter(f => f.includes('/lib/')) };
+    const db = openDatabase(':memory:');
+    await buildIndex(db, root, { config, files });
+    const result = await buildCallGraph(db, root, { config, files });
+
+    assert.equal(result.exportsDiscovered, 2, 'only lib/greet.ts and lib/shout.ts were given');
+    assert.equal(getFunctionByName(db, 'run'), null);
+    db.close();
+  });
+
+  it('refuses a config that belongs to a different project root', async () => {
+    const root = makeTsSubdirRepo(configFile({ sourceDirectories: ['web/app'], tsconfig: 'web/tsconfig.json' }));
+    const db = openDatabase(':memory:');
+    await assert.rejects(
+      () => buildCallGraph(db, makeTempDir('guardian-other-root-'), { config: reloadConfig(root) }),
+      /does not match the config's project root/,
+    );
     db.close();
   });
 });

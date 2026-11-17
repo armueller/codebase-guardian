@@ -1035,6 +1035,23 @@ export function getMetadata(db: Database.Database, key: string): string | null {
   return row?.value ?? null;
 }
 
+/**
+ * @what Counts the index rows that came from Python
+ * @how SELECT COUNT(*) over functions where language is 'py'
+ * @why The indexer and the rebuild report both ask "does this index hold any Python?"; the query lived in two places
+ *
+ * @param {Database.Database} db Open index database
+ * @returns {number} Number of Python module and unit rows
+ *
+ * @sideeffects Reads the functions table
+ * @systemlayer Data Layer
+ * @domain code-index, python-support
+ * @tags python, count, functions-table, language
+ */
+export function countPythonFunctions(db: Database.Database): number {
+  return (db.prepare("SELECT COUNT(*) AS c FROM functions WHERE language = 'py'").get() as { c: number }).c;
+}
+
 export function getIndexMetadata(db: Database.Database, staleFileCount: number = 0): IndexMetadata {
   const counts = db.prepare(`
     SELECT

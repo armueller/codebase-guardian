@@ -25,6 +25,10 @@ def main(argv: list[str] | None = None) -> int:
     p_extract.add_argument("file")
     p_callgraph = sub.add_parser("callgraph", help="Build cross-file call edges for a package")
     p_callgraph.add_argument("package_root")
+    # Repeatable. When given, the values are the whole exclude list (the Node
+    # caller passes the project's effective excludeDirectories); when absent,
+    # callgraph falls back to its built-in list.
+    p_callgraph.add_argument("--exclude", action="append", default=None)
     args = parser.parse_args(argv)
 
     if args.command == "extract":
@@ -37,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(json.dumps(payload))
     elif args.command == "callgraph":
         try:
-            payload = build_callgraph(args.package_root)
+            payload = build_callgraph(args.package_root, args.exclude)
         except Exception as exc:  # build_callgraph is already fail-open internally;
             # this is a last-resort net for anything that still escapes it.
             payload = {"language": "py", "root": args.package_root, "error": "internal", "detail": str(exc), "edges": []}

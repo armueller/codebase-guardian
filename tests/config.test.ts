@@ -1,21 +1,21 @@
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { reloadConfig, resolveConfig, configProblems, DEFAULT_EXCLUDE } from '../src/config.js';
 import { parseJsonc } from '../src/tsconfig-resolution.js';
+import { makeTempDir, cleanupTempDirs, putFiles } from './helpers/ts-subdir-repo.js';
 
-/** Creates an empty temp project root. */
+after(cleanupTempDirs);
+
+/** Creates an empty temp project root (removed when the file's tests finish). */
 function makeRoot(): string {
-  return mkdtempSync(path.join(tmpdir(), 'guardian-config-'));
+  return makeTempDir('guardian-config-');
 }
 
-/** Writes a file under root, creating parent folders. */
+/** Writes one file under root, creating parent folders. */
 function put(root: string, relPath: string, content: string): void {
-  const full = path.join(root, relPath);
-  mkdirSync(path.dirname(full), { recursive: true });
-  writeFileSync(full, content);
+  putFiles(root, { [relPath]: content });
 }
 
 describe('tsconfig resolution', () => {

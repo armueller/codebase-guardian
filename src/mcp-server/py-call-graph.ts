@@ -14,7 +14,7 @@ import { existsSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import type Database from 'better-sqlite3';
-import { getGuardianHome } from '../config.js';
+import { getGuardianHome, resolveConfig, type GuardianConfig } from '../config.js';
 import { getFunctionByFileAndLine, getFunctionByName, insertCallEdge } from './db.js';
 
 // ─── guardian_py callgraph JSON contract (see python/guardian_py/callgraph.py) ──
@@ -40,10 +40,30 @@ interface PyCallGraphPayload {
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
+ * @what Builds the argument list for `python -m guardian_py callgraph`
+ * @how The fixed prefix (-m guardian_py callgraph <repoRoot>) followed by one `--exclude <entry>` pair per exclude entry; an empty list adds nothing, so the helper falls back to its built-in list
+ * @why The Python walk used to keep its own hard-coded exclude list and ignore the project's excludeDirectories. Passing the list from Node makes src/config.ts the single source for both languages.
+ *
+ * @param {string} repoRoot Absolute path of the package root guardian_py walks
+ * @param {string[]} exclude The project's effective excludeDirectories (defaults plus its own entries)
+ * @returns {string[]} The argv for the Python interpreter
+ *
+ * @sideeffects None
+ * @systemlayer External Integration
+ * @domain code-index, python-support
+ * @tags python, callgraph, exclude-directories, argv, pure
+ */
+export function callgraphArgs(repoRoot: string, exclude: string[]): string[] {
+  return ['-m', 'guardian_py', 'callgraph', repoRoot, ...exclude.flatMap(entry => ['--exclude', entry])];
+}
+
+/**
  * @what Invokes guardian_py callgraph against repoRoot and resolves its edges into call_edges rows
  * @how Resolves <GUARDIAN_HOME>/pyenv/bin/python (same resolution as py-index.ts's extractPythonFile,
- *   no fallback interpreter); if missing, fails open. Otherwise runs `python -m guardian_py callgraph
- *   <repoRoot>` with PYTHONPATH pointed at the bundled helper source, parses stdout as JSON, and for
+ *   no fallback interpreter); if missing, fails open. Otherwise takes the project config (opts.config,
+ *   or resolveConfig(repoRoot)) and runs `python -m guardian_py callgraph <repoRoot>` with one
+ *   `--exclude` per entry of its excludeDirectories (callgraphArgs), so the Python walk leaves out the
+ *   same folders the index does. PYTHONPATH points at the bundled helper source. It parses stdout as JSON, and for
  *   each edge with a non-null callee_file: converts both caller_file/callee_file from absolute to the
  *   repo-relative form (path.relative(repoRoot, absPath)) that functions.file_path uses, then resolves
  *   source (from caller_file/caller_line, falling back to caller_name) and target (from
@@ -57,20 +77,22 @@ interface PyCallGraphPayload {
  *
  * @param {Database.Database} db The database instance
  * @param {string} repoRoot Absolute path to the repository root (the package root guardian_py walks)
- * @param {{timeoutMs?: number}} [opts] Optional subprocess timeout override (default 60000ms — a
- *   repo-wide Jedi walk is much slower than the single-file extract call in py-index.ts)
+ * @param {{timeoutMs?: number, config?: GuardianConfig}} [opts] timeoutMs: subprocess timeout override
+ *   (default 60000ms — a repo-wide Jedi walk is much slower than the single-file extract call in py-index.ts).
+ *   config: an already-resolved project config, defaulting to resolveConfig(repoRoot)
  * @returns {Promise<{edgesCreated: number, note: string | null}>} Count of call_edges rows inserted (0 on any
  *   failure — fail-open), plus the reason nothing was built when a fail-open path was taken (null on a normal run)
  *
- * @sideeffects Spawns a Python subprocess via execFileSync; writes rows to the call_edges table
+ * @sideeffects Spawns a Python subprocess via execFileSync; writes rows to the call_edges table; when
+ *   opts.config is omitted, resolveConfig may run git rev-parse, read guardian.config.json and fill the config cache
  * @systemlayer External Integration
  * @domain code-index, python-support
- * @tags python, callgraph, subprocess, fail-open, indexer, def-line-resolution, execFileSync
+ * @tags python, callgraph, subprocess, fail-open, indexer, def-line-resolution, exclude-directories, execFileSync
  */
 export async function buildPythonCallGraph(
   db: Database.Database,
   repoRoot: string,
-  opts?: { timeoutMs?: number }
+  opts?: { timeoutMs?: number; config?: GuardianConfig }
 ): Promise<{ edgesCreated: number; note: string | null }> {
   const guardianHome = getGuardianHome();
   const pyBin = path.join(guardianHome, 'pyenv', 'bin', 'python');
@@ -83,9 +105,11 @@ export async function buildPythonCallGraph(
     return { edgesCreated: 0, note: 'Python interpreter not found' };
   }
 
+  const exclude = (opts?.config ?? resolveConfig(repoRoot)).excludeDirectories;
+
   let stdout: string;
   try {
-    stdout = execFileSync(pyBin, ['-m', 'guardian_py', 'callgraph', repoRoot], {
+    stdout = execFileSync(pyBin, callgraphArgs(repoRoot, exclude), {
       timeout: opts?.timeoutMs ?? 60000,
       encoding: 'utf-8',
       maxBuffer: 50 * 1024 * 1024,
