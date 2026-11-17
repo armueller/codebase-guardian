@@ -15,6 +15,7 @@ import path from 'path';
 import crypto from 'crypto';
 import os from 'os';
 import { resolveTsconfig, detectSourceDirectories, type TsconfigResolution } from './tsconfig-resolution.js';
+import { errorMessage } from './shared/util.js';
 import {
   stringListField, objectField, countField, flagField, usableExcludes, dottedExtensions,
 } from './config-validation.js';
@@ -244,7 +245,7 @@ function loadConfigFile(projectRoot: string): { file: GuardianConfigFile | null;
     }
     return { file: parsed as GuardianConfigFile, error: null };
   } catch (err) {
-    return { file: null, error: err instanceof Error ? err.message : String(err) };
+    return { file: null, error: errorMessage(err) };
   }
 }
 

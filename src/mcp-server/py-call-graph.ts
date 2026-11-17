@@ -16,6 +16,7 @@ import { fileURLToPath } from 'url';
 import type Database from 'better-sqlite3';
 import { getGuardianHome, resolveConfig, type GuardianConfig } from '../config.js';
 import { getFunctionByFileAndLine, getFunctionByName, insertCallEdge } from './db.js';
+import { errorMessage } from '../shared/util.js';
 
 // ─── guardian_py callgraph JSON contract (see python/guardian_py/callgraph.py) ──
 
@@ -116,7 +117,7 @@ export async function buildPythonCallGraph(
       env: { ...process.env, PYTHONPATH: pyPath },
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = errorMessage(err);
     console.error(`  Python call graph subprocess failed, skipping: ${message}`);
     return { edgesCreated: 0, note: `Python call graph subprocess failed: ${message}` };
   }
