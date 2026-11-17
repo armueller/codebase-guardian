@@ -12,11 +12,11 @@
 
 ## Why
 
-`the reporting project` keeps its TypeScript app in `web/` and has no `tsconfig.json` at the git root. `rebuild_index` there returned `Error: File not found: <root>/tsconfig.json` and left an index with no Tier 2 rows, no call edges and no docs. Investigating that one report found four separate defects in guardian (0.8.2, `2e8bae7`):
+The project that reported this keeps its TypeScript app in `web/` and has no `tsconfig.json` at the git root. `rebuild_index` there returned `Error: File not found: <root>/tsconfig.json` and left an index with no Tier 2 rows, no call edges and no docs. Investigating that one report found four separate defects in guardian (0.8.2, `2e8bae7`):
 
-1. **The call graph only looks for `<git root>/tsconfig.json`.** `loadProject()` in `src/mcp-server/call-graph.ts` hard-codes the path, and ts-morph throws when the file is missing. `project B`, `project C`, `project D` and `project E` have no root tsconfig either, so they fail the same way.
+1. **The call graph only looks for `<git root>/tsconfig.json`.** `loadProject()` in `src/mcp-server/call-graph.ts` hard-codes the path, and ts-morph throws when the file is missing. Four other indexed projects have no root tsconfig either, so they fail the same way.
 2. **One failed phase aborts the rest.** The throw skips the Python call graph and the validation-cache clear, which run after the TypeScript call graph. The result is a bare error that does not say phase 1 succeeded or what was skipped. The pipeline is also written twice (`index.ts` `rebuild_index` and `build-index.ts`).
-3. **The MCP server freezes its config at startup.** `resolveConfig()` caches per project root for the life of the process. The the reporting project server started before `guardian.config.json` and `docs/` existed, so the rebuild used `sourceDirectories ["."]` and `docsDirectories []` and ignored the config file written one second earlier.
+3. **The MCP server freezes its config at startup.** `resolveConfig()` caches per project root for the life of the process. That project's server started before `guardian.config.json` and `docs/` existed, so the rebuild used `sourceDirectories ["."]` and `docsDirectories []` and ignored the config file written one second earlier.
 4. **The two phases index different files, and `excludeDirectories` does nothing.** The indexer's walker skips a hard-coded folder list. The call graph uses its own glob, which loads everything under a source directory, including `node_modules` and `build` (verified). `excludeDirectories` is read into the config and consumed by no code.
 
 ## Goals
@@ -29,7 +29,7 @@
 
 ## Non-goals
 
-- More than one TypeScript root per repo (for example `project F`'s `mcp-server/tsconfig.json`). The field is a single path. It can widen to a list later without breaking existing configs.
+- More than one TypeScript root per repo (for example a repo that also has an `mcp-server/tsconfig.json`). The field is a single path. It can widen to a list later without breaking existing configs.
 - Solution-style configs whose real settings live in a referenced file such as `tsconfig.app.json`. Pointing the field at that file directly already works.
 - Changing the hook. It never reads a tsconfig.
 - Applying `excludeDirectories` to the git-based staleness count.
@@ -89,7 +89,7 @@ The result lists every phase with its status. `rebuild_index` heads it "Index Re
 
 The walker in `indexer.ts` becomes the single source of "which files are in the index". The call graph stops globbing and adds exactly the `.ts`/`.tsx` files the walker returns. Test files (`*.test.ts[x]`) are already dropped by the walker and already ignored by the call graph, so its output does not change for files that were in both sets.
 
-`excludeDirectories` replaces the hard-coded `WALK_EXCLUDE_DIRS`. The default becomes today's walker list (which is a superset of the current `DEFAULT_EXCLUDE`), so repos without the field behave as now. Like every other field, a value in `guardian.config.json` replaces the default. An entry with no slash matches a folder of that name at any depth (`node_modules`); an entry with a slash matches that path relative to the git root (`web/data`).
+`excludeDirectories` takes over from the hard-coded `WALK_EXCLUDE_DIRS`. The default list is that walker list (a superset of the old `DEFAULT_EXCLUDE`), so repos without the field behave as before. A value in `guardian.config.json` is **added to** the default list; the defaults always apply and cannot be removed (decided by Austin on 2026-11-17, replacing the earlier "replaces the default" call; see section 5). An entry with no slash matches a folder of that name at any depth (`node_modules`); an entry with a slash matches that path relative to the git root (`web/data`).
 
 ### 5. Added after the whole-branch review (2026-11-16)
 
@@ -102,13 +102,13 @@ The review found four ways the first implementation still broke the anti-goal or
 
 When the index phase has more than one limitation, the report lists all of them.
 
-**Open decision for Austin (not changed):** `excludeDirectories` replaces the default list, as approved. Before 0.8.3 the field was ignored and the 15 defaults always applied, so every existing config that sets the field effectively had "add to the defaults" behaviour and changes on upgrade. The README example and the template now list all 15 defaults and the README has an upgrade note. Whether a configured list should add to the defaults instead is Austin's call.
+**Decided by Austin on 2026-11-17: `excludeDirectories` adds to the defaults.** The first implementation replaced the default list, as originally approved. The review pointed out that before 0.8.3 the field was ignored and the 15 defaults always applied, so every existing config that sets the field effectively had "add" behaviour, and under "replace" a config without `.claude`, `.venv` or `site-packages` would start indexing Claude worktrees and virtualenvs. With "add", upgrading can only skip more folders. The cost is that a folder named like a default (`build`, `dist`) can never be indexed from inside a source directory; Austin confirmed those should not be indexed anyway. The README example and the template now list only project-specific entries.
 
 ## Calls I made (not decisions Austin stated)
 
 - No tsconfig and no field → compiler defaults reported as degraded, instead of skipping the TypeScript call graph.
 - Field set but file missing → that phase fails; no fallback.
-- `excludeDirectories` replaces the default list instead of adding to it, matching the README, the template and the other fields.
+- ~~`excludeDirectories` replaces the default list instead of adding to it, matching the README, the template and the other fields.~~ Reversed on 2026-11-17: it adds to the defaults (section 5).
 - Slash/no-slash matching for `excludeDirectories` entries.
 - `isError` only when indexing failed; a degraded or failed call graph is a visible problem in a usable result.
 - Auto-detection of source directories follows the configured tsconfig.

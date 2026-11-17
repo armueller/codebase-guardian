@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { reloadConfig, DEFAULT_EXCLUDE } from '../src/config.js';
+import { reloadConfig } from '../src/config.js';
 import { listIndexFiles, isExcludedDir, missingConfiguredDirectories } from '../src/mcp-server/file-walk.js';
 
 // Built at test time, not committed as a fixture: .gitignore drops node_modules/.
@@ -46,18 +46,19 @@ describe('listIndexFiles', () => {
     assert.deepEqual(docFiles, ['docs/guide.md', 'web/app/README.md']);
   });
 
-  it('a configured list replaces the defaults; a bare name matches at any depth', () => {
+  it('a configured list adds to the defaults; a bare name matches at any depth', () => {
+    // build/ and node_modules/ stay excluded although the config does not repeat them.
     const { codeFiles } = list({ ...base, excludeDirectories: ['data'] });
-    assert.deepEqual(codeFiles, ['web/app/a.ts', 'web/app/build/y.ts', 'web/app/node_modules/p/x.ts']);
+    assert.deepEqual(codeFiles, ['web/app/a.ts']);
   });
 
   it('an entry with a slash matches only that path from the project root', () => {
-    const { codeFiles } = list({ ...base, excludeDirectories: [...DEFAULT_EXCLUDE, 'web/app/data'] });
+    const { codeFiles } = list({ ...base, excludeDirectories: ['web/app/data'] });
     assert.deepEqual(codeFiles, ['web/app/a.ts', 'web/app/nested/data/keep.ts']);
   });
 
   it('tolerates a leading ./ and a trailing slash on a path entry', () => {
-    const { codeFiles } = list({ ...base, excludeDirectories: [...DEFAULT_EXCLUDE, './web/app/data/'] });
+    const { codeFiles } = list({ ...base, excludeDirectories: ['./web/app/data/'] });
     assert.deepEqual(codeFiles, ['web/app/a.ts', 'web/app/nested/data/keep.ts']);
   });
 

@@ -41,7 +41,7 @@ All six tasks are done on `fix/tsconfig-path-and-rebuild-resilience`. Suite: 414
 - The exclusion test at the call-graph level was vacuous (it used `node_modules`, which export discovery filters by name anyway). It now uses `build/` and a path-style entry.
 - Docs: README example and template list all 15 default excludes; upgrade note added; `docs/indexing-pipeline.md` sample output and `docs/architecture.md` file list updated.
 
-Open for Austin: whether a configured `excludeDirectories` should add to the defaults instead of replacing them (see the spec, section 5). Deferred minors are listed in the hand-off message.
+**2026-11-17, decided by Austin:** a configured `excludeDirectories` adds to the defaults instead of replacing them (spec, section 5). Implemented test-first: `reloadConfig` merges the config's entries into `DEFAULT_EXCLUDE`; the README example and template now list only project-specific folders; the upgrade warning is gone because an upgrade can only skip more folders. Deferred minors are listed in the hand-off message.
 
 Not done here, by design: push, tag, publish. The installed plugin stays on 0.8.2 until Austin releases 0.8.3.
 
@@ -49,7 +49,7 @@ Not done here, by design: push, tag, publish. The installed plugin stays on 0.8.
 
 - Config field name is exactly `"tsconfig"`: one path, relative to the git root. Not a list.
 - A configured tsconfig that is missing or unusable never falls back to another file.
-- `excludeDirectories` in `guardian.config.json` replaces the default list. An entry with no `/` matches a folder of that name at any depth. An entry with a `/` matches that path relative to the git root.
+- `excludeDirectories` in `guardian.config.json` adds to the default list, which always applies (changed 2026-11-17; the tasks below were written and first built with "replaces"). An entry with no `/` matches a folder of that name at any depth. An entry with a `/` matches that path relative to the git root.
 - Default exclude list is today's walker list, verbatim: `node_modules, dist, .claude, cdk.out, build, __snapshots__, .next, .turbo, coverage, .venv, __pycache__, .pytest_cache, site-packages, .mypy_cache, .ruff_cache`.
 - Stored `file_path` values stay relative to the git root.
 - The hook is not changed and keeps the config cache.
@@ -368,6 +368,6 @@ Rules for `runRebuild`:
 
 - [x] **Step 5: Commit** `docs: tsconfig field, excludeDirectories matching, rebuild statuses; bump to 0.8.3`
 
-- [x] **Step 6: Tell the other session** (`the reporting session`) what to add to its `guardian.config.json` once 0.8.3 is installed, and what a rebuild without the field looks like (degraded: alias call edges are missing).
+- [x] **Step 6: Tell the session that reported the problem** what to add to its `guardian.config.json` once 0.8.3 is installed, and what a rebuild without the field looks like (degraded: alias call edges are missing).
 
 Publishing (push, tag, `/plugin update`) is Austin's step after review and is not part of this plan.

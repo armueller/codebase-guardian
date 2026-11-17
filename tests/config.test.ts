@@ -102,7 +102,7 @@ describe('config field validation', () => {
     put(root, 'guardian.config.json', JSON.stringify({ excludeDirectories: ['x'], sourceDirectories: ['.'] }));
     const config = reloadConfig(root);
     assert.deepEqual(config.configWarnings, []);
-    assert.deepEqual(config.excludeDirectories, ['x']);
+    assert.deepEqual(config.excludeDirectories, [...DEFAULT_EXCLUDE, 'x']);
   });
 
   for (const rootValue of ['[]', 'null', '"text"', '5']) {
@@ -146,6 +146,28 @@ describe('reloadConfig', () => {
       if (original === undefined) delete process.env.GUARDIAN_PROJECT_ROOT;
       else process.env.GUARDIAN_PROJECT_ROOT = original;
     }
+  });
+});
+
+describe('excludeDirectories from guardian.config.json', () => {
+  it('adds to the default list; the defaults always apply', () => {
+    const root = makeRoot();
+    put(root, 'guardian.config.json', JSON.stringify({ excludeDirectories: ['web/data', 'generated'] }));
+    assert.deepEqual(reloadConfig(root).excludeDirectories, [...DEFAULT_EXCLUDE, 'web/data', 'generated']);
+  });
+
+  it('does not repeat an entry that is already a default or listed twice', () => {
+    const root = makeRoot();
+    put(root, 'guardian.config.json', JSON.stringify({
+      excludeDirectories: ['node_modules', 'web/data', '.venv', 'web/data'],
+    }));
+    assert.deepEqual(reloadConfig(root).excludeDirectories, [...DEFAULT_EXCLUDE, 'web/data']);
+  });
+
+  it('an empty list leaves the defaults in place', () => {
+    const root = makeRoot();
+    put(root, 'guardian.config.json', JSON.stringify({ excludeDirectories: [] }));
+    assert.deepEqual(reloadConfig(root).excludeDirectories, DEFAULT_EXCLUDE);
   });
 });
 

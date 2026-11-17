@@ -105,8 +105,8 @@ interface GuardianConfigFile {
 
 // ─── Defaults ────────────────────────────────────────────────────────────────
 
-// Folders left out of the index unless guardian.config.json sets its own excludeDirectories
-// (which replaces this list). Common non-source folders plus Python virtualenvs and caches.
+// Folders always left out of the index: common non-source folders plus Python virtualenvs and
+// caches. excludeDirectories in guardian.config.json adds to this list; it cannot remove from it.
 export const DEFAULT_EXCLUDE = [
   'node_modules', 'dist', '.claude', 'cdk.out', 'build', '__snapshots__', '.next', '.turbo', 'coverage',
   '.venv', '__pycache__', '.pytest_cache', 'site-packages', '.mypy_cache', '.ruff_cache',
@@ -409,8 +409,8 @@ export function resolveConfig(fromPath?: string): GuardianConfig {
 
 /**
  * @what Rebuilds the GuardianConfig for a known project root from disk and replaces its cache entry
- * @how Re-reads guardian.config.json (recording on the config why the file was unusable, if it was), resolves the tsconfig (recording an invalid one with its reason), validates the four list fields (a wrong-shaped one is ignored with a warning on the config), re-runs auto-detection for unset or ignored fields without re-detecting the root itself, then overwrites the cached config so later resolveConfig calls for that root see the fresh one
- * @why resolveConfig caches for the life of the process, which is right for the short-lived hook but wrong for the long-lived MCP server: a config file written after startup was ignored until the server restarted
+ * @how Re-reads guardian.config.json (recording on the config why the file was unusable, if it was), resolves the tsconfig (recording an invalid one with its reason), validates the four list fields (a wrong-shaped one is ignored with a warning on the config), re-runs auto-detection for unset or ignored fields without re-detecting the root itself, then overwrites the cached config so later resolveConfig calls for that root see the fresh one. excludeDirectories is the one list field that does not replace its default: the config's entries are added to DEFAULT_EXCLUDE (duplicates dropped), so the defaults always apply.
+ * @why resolveConfig caches for the life of the process, which is right for the short-lived hook but wrong for the long-lived MCP server: a config file written after startup was ignored until the server restarted. Excludes are additive because nothing on the default list is something a project wants indexed, and a config that listed only its own folders would otherwise start indexing virtualenvs and Claude worktrees.
  *
  * @param {string} projectRoot Absolute project root, as previously detected
  * @returns {GuardianConfig} The freshly built config
@@ -431,7 +431,7 @@ export function reloadConfig(projectRoot: string): GuardianConfig {
   const configWarnings: string[] = [];
   const sourceDirectories = stringListField(configFile?.sourceDirectories, 'sourceDirectories', configWarnings);
   const docsDirectories = stringListField(configFile?.docsDirectories, 'docsDirectories', configWarnings);
-  const excludeDirectories = stringListField(configFile?.excludeDirectories, 'excludeDirectories', configWarnings);
+  const extraExcludes = stringListField(configFile?.excludeDirectories, 'excludeDirectories', configWarnings);
   const fileExtensions = stringListField(configFile?.fileExtensions, 'fileExtensions', configWarnings);
 
   // Resolve paths
@@ -448,7 +448,8 @@ export function reloadConfig(projectRoot: string): GuardianConfig {
 
     sourceDirectories: sourceDirectories ?? detectSourceDirectories(projectRoot, tsconfigFile),
     docsDirectories: docsDirectories ?? detectDocsDirectories(projectRoot),
-    excludeDirectories: excludeDirectories ?? DEFAULT_EXCLUDE,
+    // Added to the defaults, never replacing them (a Set keeps first occurrences, in order).
+    excludeDirectories: [...new Set([...DEFAULT_EXCLUDE, ...(extraExcludes ?? [])])],
     fileExtensions: fileExtensions ?? DEFAULT_EXTENSIONS,
 
     databasePath: path.join(indexDir, 'code-quality.db'),
