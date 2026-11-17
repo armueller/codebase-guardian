@@ -14,6 +14,7 @@ import { buildCallGraph, type CallGraphResult } from './call-graph.js';
 import { buildPythonCallGraph } from './py-call-graph.js';
 import { invalidateCache } from './embeddings.js';
 import { clearValidationArtifacts } from './validation-artifacts.js';
+import { missingConfiguredDirectories } from './file-walk.js';
 
 /**
  * @what How one rebuild phase ended
@@ -151,11 +152,12 @@ function phase(name: PhaseName, status: PhaseStatus, detail: string | null = nul
 
 /**
  * @what Decides the Python call-graph phase's status from what buildPythonCallGraph returned
- * @how No note means it ran normally: ok. With a note (a fail-open path was taken), it is degraded when the index holds at least one Python row, because edges that should exist are missing; with no Python rows there was nothing to build, so it is ok with a remark.
+ * @how No note means it ran normally: ok. With a note (a fail-open path was taken), it is degraded when the project has Python, because edges that should exist are missing. "Has Python" means the index holds a Python row OR the index phase had to skip Python files: a missing interpreter both prevents the rows from being written and makes the call graph fail open, so rows alone cannot be the test. With a note and no Python at all there was nothing to build, so it is ok with a remark.
  * @why buildPythonCallGraph fails open and returns zero edges both when a repo has no Python and when the interpreter is missing; only the second is a problem worth reporting
  *
  * @param {Database.Database} db Open index database, already populated by the index phase
  * @param {string | null} note The reason buildPythonCallGraph built nothing, or null
+ * @param {number} pythonFilesSkipped Python files the index phase could not extract
  * @returns {PhaseResult} The py-call-graph phase result
  *
  * @sideeffects Reads the functions table
@@ -163,16 +165,54 @@ function phase(name: PhaseName, status: PhaseStatus, detail: string | null = nul
  * @domain rebuild, python-support
  * @tags rebuild, python, call-graph, degraded, phase-status
  */
-function pythonPhase(db: Database.Database, note: string | null): PhaseResult {
+function pythonPhase(db: Database.Database, note: string | null, pythonFilesSkipped: number): PhaseResult {
   if (note === null) return phase('py-call-graph', 'ok');
   const pyRows = (db.prepare("SELECT COUNT(*) AS c FROM functions WHERE language = 'py'").get() as { c: number }).c;
-  if (pyRows > 0) return phase('py-call-graph', 'degraded', note);
+  if (pyRows > 0 || pythonFilesSkipped > 0) return phase('py-call-graph', 'degraded', note);
   return phase('py-call-graph', 'ok', 'no Python files indexed');
 }
 
 /**
+ * @what Lists the reasons the index phase ran with a limitation, in report order
+ * @how Collects, in this order: guardian.config.json being unusable, each ignored config field, configured source or docs directories that do not exist, and Python files that could not be extracted. An empty list means the phase is ok.
+ * @why Each of these leaves part of the project out of the index while indexing itself "succeeds". The report must say so, and say all of them, not just the first.
+ *
+ * @param {GuardianConfig} config The config the index phase ran with
+ * @param {IndexStats} stats What the index phase reported
+ * @returns {string[]} One reason per limitation; empty when there are none
+ *
+ * @sideeffects Reads the filesystem (stat of the configured directories)
+ * @systemlayer Business Logic
+ * @domain rebuild, code-index
+ * @tags rebuild, degraded, config-warning, missing-directory, python
+ */
+function indexLimitations(config: GuardianConfig, stats: IndexStats): string[] {
+  const reasons: string[] = [];
+
+  if (config.configFileError) {
+    reasons.push(`guardian.config.json could not be parsed (${config.configFileError}); auto-detected settings were used`);
+  }
+  reasons.push(...config.configWarnings);
+
+  const missing = missingConfiguredDirectories(config);
+  if (missing.length === 1) {
+    reasons.push(`configured directory does not exist: ${missing[0]}`);
+  } else if (missing.length > 1) {
+    reasons.push(`configured directories do not exist: ${missing.join(', ')}`);
+  }
+
+  const skipped = stats.pythonFilesSkipped;
+  if (skipped > 0) {
+    const subject = skipped === 1 ? '1 Python file was' : `${skipped} Python files were`;
+    reasons.push(`${subject} not indexed (extraction failed, or the Python interpreter is missing)`);
+  }
+
+  return reasons;
+}
+
+/**
  * @what Runs a full index rebuild as five isolated phases and reports each one's outcome
- * @how In order: clear the old data, index code and docs, build the TypeScript call graph, build the Python call graph, clear the hook's validation cache and sessions. Each phase runs through attempt(), so a throw is recorded as `failed` and the next phase still runs. The two call graphs resolve against the index phase's rows, so they are `skipped` when clearing or indexing failed; the validation cache is always cleared. The embedding cache is invalidated once after the call graphs.
+ * @how In order: clear the old data, index code and docs, build the TypeScript call graph, build the Python call graph, clear the hook's validation cache and sessions. Each phase runs through attempt(), so a throw is recorded as `failed` and the next phase still runs. The index phase is `degraded` when indexLimitations finds anything (unusable or partly ignored config, a configured directory that does not exist, Python files that could not be extracted), with every reason listed. The two call graphs resolve against the index phase's rows, so they are `skipped` when clearing or indexing failed; the validation cache is always cleared. The embedding cache is invalidated once after the call graphs.
  * @why One sequence for the MCP tool and the CLI, and a rebuild that never looks complete when part of it did not run. Before this, a missing tsconfig aborted the Python call graph and the cache clear and returned a bare error.
  *
  * @param {Database.Database} db Open index database
@@ -212,8 +252,9 @@ export async function runRebuild(
       phases.push(phase('index', 'failed', indexed.error));
     } else {
       indexStats = indexed.value;
-      phases.push(config.configFileError
-        ? phase('index', 'degraded', `guardian.config.json could not be parsed (${config.configFileError}); auto-detected settings were used`)
+      const limitations = indexLimitations(config, indexStats);
+      phases.push(limitations.length > 0
+        ? phase('index', 'degraded', limitations.join('; '))
         : phase('index', 'ok'));
     }
   }
@@ -236,7 +277,7 @@ export async function runRebuild(
     console.error('Building Python call graph...');
     const pyGraph = await attempt(async () => {
       const stats = await d.buildPythonCallGraph(db, root);
-      return { stats, result: pythonPhase(db, stats.note) };
+      return { stats, result: pythonPhase(db, stats.note, indexStats?.pythonFilesSkipped ?? 0) };
     });
     if (pyGraph.ok) {
       pyGraphStats = pyGraph.value.stats;

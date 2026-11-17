@@ -122,14 +122,27 @@ describe('buildCallGraph with a tsconfig outside the git root', () => {
   });
 
   it('does not load files from excluded folders', async () => {
+    // build/ and a path-style entry are the discriminating cases: the old glob loaded both and
+    // produced Tier 2 rows for them (node_modules alone would not prove anything, because export
+    // discovery filters that path by name anyway).
     const root = makeTsSubdirRepo({
-      ...configFile({ sourceDirectories: ['web/app'], tsconfig: 'web/tsconfig.json' }),
+      ...configFile({
+        sourceDirectories: ['web/app'],
+        tsconfig: 'web/tsconfig.json',
+        excludeDirectories: ['node_modules', 'build', 'web/app/generated'],
+      }),
       'web/app/node_modules/p/x.ts': 'export function leaked(): number { return 1; }\n',
+      'web/app/build/y.ts': 'export function inBuild(): number { return 2; }\n',
+      'web/app/generated/g.ts': 'export function inGenerated(): number { return 3; }\n',
+      'web/app/kept/generated/k.ts': 'export function keptGenerated(): number { return 4; }\n',
     });
     const { db, result } = await build(root);
 
-    assert.equal(result.exportsDiscovered, 4);
     assert.equal(getFunctionByName(db, 'leaked'), null);
+    assert.equal(getFunctionByName(db, 'inBuild'), null);
+    assert.equal(getFunctionByName(db, 'inGenerated'), null);
+    assert.ok(getFunctionByName(db, 'keptGenerated'), 'a path entry excludes only that path');
+    assert.equal(result.exportsDiscovered, 5);
     db.close();
   });
 

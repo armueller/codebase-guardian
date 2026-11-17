@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { reloadConfig, DEFAULT_EXCLUDE } from '../src/config.js';
-import { listIndexFiles, isExcludedDir } from '../src/mcp-server/file-walk.js';
+import { listIndexFiles, isExcludedDir, missingConfiguredDirectories } from '../src/mcp-server/file-walk.js';
 
 // Built at test time, not committed as a fixture: .gitignore drops node_modules/.
 const TREE = [
@@ -78,6 +78,25 @@ describe('listIndexFiles', () => {
   });
 });
 
+describe('missingConfiguredDirectories', () => {
+  it('names configured source and docs directories that do not exist', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'guardian-missing-dirs-'));
+    mkdirSync(path.join(dir, 'web/app'), { recursive: true });
+    mkdirSync(path.join(dir, 'docs'));
+    writeFileSync(path.join(dir, 'notadir'), '');
+    writeFileSync(path.join(dir, 'guardian.config.json'), JSON.stringify({
+      sourceDirectories: ['web/app', 'web/ap', 'notadir'],
+      docsDirectories: ['docs', 'dox'],
+    }));
+    assert.deepEqual(missingConfiguredDirectories(reloadConfig(dir)), ['web/ap', 'notadir', 'dox']);
+  });
+
+  it('is empty when every configured directory exists', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'guardian-missing-dirs-'));
+    assert.deepEqual(missingConfiguredDirectories(reloadConfig(dir)), []);
+  });
+});
+
 describe('isExcludedDir', () => {
   it('matches a path entry exactly', () => {
     assert.equal(isExcludedDir('web/app/data', ['web/app/data']), true);
@@ -89,6 +108,13 @@ describe('isExcludedDir', () => {
     assert.equal(isExcludedDir('x/y/node_modules', ['node_modules']), true);
     assert.equal(isExcludedDir('node_modules', ['node_modules']), true);
     assert.equal(isExcludedDir('x/node_modules_backup', ['node_modules']), false);
+  });
+
+  it('treats ./name and /name as a path from the project root, not a bare name', () => {
+    for (const entry of ['./data', '/data', './data/']) {
+      assert.equal(isExcludedDir('data', [entry]), true, `${entry} excludes the top-level folder`);
+      assert.equal(isExcludedDir('web/app/nested/data', [entry]), false, `${entry} must not match at depth`);
+    }
   });
 
   it('ignores empty entries', () => {

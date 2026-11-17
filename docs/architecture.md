@@ -266,7 +266,7 @@ codebase-guardian/
 │   ├── run-hook.sh / run-mcp.sh      # Thin wrappers the plugin invokes (resolve node, exec the built dist/)
 │   └── copy-assets.mjs               # Copies .cjs boundary files into dist/ after tsc
 ├── src/                              # TypeScript source — see CLAUDE.md's "Project Structure" for the full tree
-│   ├── mcp-server/                   # MCP server (index.ts, db.ts, indexer.ts, call-graph.ts, py-index.ts, py-call-graph.ts, embeddings.ts, build-index.ts)
+│   ├── mcp-server/                   # MCP server (index.ts, db.ts, rebuild.ts, file-walk.ts, indexer.ts, call-graph.ts, py-index.ts, py-call-graph.ts, embeddings.ts, build-index.ts)
 │   └── hooks/                        # PreToolUse hook (pre-edit-validation.ts + helpers/, including the py-*.ts Python path)
 ├── python/guardian_py/               # Python extraction helper (ast-based), bundled alongside the compiled TS
 ├── requirements-python.txt           # Pinned Python toolchain versions (ruff, pydoclint, pyright, griffe, jedi)

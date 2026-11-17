@@ -55,6 +55,11 @@ export interface ParsedDoc {
  * @domain code-index, metrics
  * @tags indexing, statistics, metrics, rebuild, counts
  */
+/**
+ * @what Counts produced by one buildIndex run, shown in the rebuild report
+ * @domain code-index, indexer
+ * @tags indexing, stats, rebuild-report
+ */
 export interface IndexStats {
   filesScanned: number;
   tier1Added: number;
@@ -64,6 +69,8 @@ export interface IndexStats {
   filesSkipped: number;
   commentsExtracted: number;
   docSectionsCreated: number;
+  /** Python files that produced no rows because extraction returned nothing (no interpreter, helper failure, or a file that could not be parsed) */
+  pythonFilesSkipped: number;
 }
 
 // ─── Domain/Tag Normalization ────────────────────────────────────────────────
@@ -673,7 +680,7 @@ function parseDocFile(content: string, filePath: string): ParsedDoc | null {
  * @param {string} absPath Absolute path to the on-disk .py file
  * @param {string} relativePath Path relative to repoRoot, used as the file_path column (same normalization as the TS path)
  * @param {string} contentHash Precomputed hash of the file's on-disk content, stored via setFileHash regardless of extraction outcome
- * @param {IndexStats} stats Mutable stats accumulator, updated in place
+ * @param {IndexStats} stats Mutable stats accumulator, updated in place. A file whose extraction returns nothing writes no rows and increments stats.pythonFilesSkipped, so the rebuild report can say that Python was left out.
  * @returns {Promise<void>}
  *
  * @sideeffects Spawns a Python subprocess (via extractPythonFile), writes rows to the functions/function_domains/function_tags/function_systemlayers/function_embeddings/file_hashes tables
@@ -691,7 +698,10 @@ async function indexPythonFile(
   const extracted: PyExtracted | null = extractPythonFile(absPath);
   if (!extracted) {
     // Fail-open: guardian_py unavailable, subprocess error, syntax error, or parse failure.
-    // Still record the file hash so incremental rebuilds don't retry it every run.
+    // Still record the file hash so incremental rebuilds don't retry it every run. The skip is
+    // counted: with no interpreter every Python file lands here, and a rebuild that indexed no
+    // Python must not read as complete.
+    stats.pythonFilesSkipped++;
     setFileHash(db, relativePath, contentHash);
     return;
   }
@@ -803,7 +813,7 @@ async function indexPythonFile(
  * @param {Database.Database} db Open index database
  * @param {string} repoRoot Absolute project root; stored file paths are relative to it
  * @param {{incremental?: boolean, dirtyFiles?: string[], config?: GuardianConfig}} [options] incremental/dirtyFiles select a partial rebuild; config supplies an already-resolved (fresh) project config, defaulting to resolveConfig(repoRoot)
- * @returns {Promise<IndexStats>} Counts of files scanned and rows, comments, sections and embeddings created
+ * @returns {Promise<IndexStats>} Counts of files scanned and rows, comments, sections and embeddings created, plus the number of Python files that could not be extracted
  *
  * @sideeffects Reads source and doc files; deletes and inserts rows in the index database; generates embeddings (loads the local model); invalidates the embedding cache; writes index metadata; logs a warning to stderr
  * @systemlayer Data Layer
@@ -828,6 +838,7 @@ export async function buildIndex(
     filesSkipped: 0,
     commentsExtracted: 0,
     docSectionsCreated: 0,
+    pythonFilesSkipped: 0,
   };
 
   const config = options.config ?? resolveConfig(repoRoot);
@@ -1061,7 +1072,10 @@ export async function buildIndex(
       if (cfg.fileExtensions.includes('.py')) {
         const pyCount = (db.prepare("SELECT COUNT(*) AS c FROM functions WHERE language = 'py'").get() as { c: number }).c;
         const scope = { projectRoot: repoRoot, exclude: cfg.excludeDirectories };
-        if (pyCount === 0 && walkDirectory(repoRoot, ['.py'], scope).length > 0) {
+        // pythonFilesSkipped > 0 means Python files WERE walked but could not be extracted (for
+        // example no interpreter). That is a different problem, reported by the rebuild result;
+        // telling the user to change sourceDirectories would be the wrong advice.
+        if (pyCount === 0 && stats.pythonFilesSkipped === 0 && walkDirectory(repoRoot, ['.py'], scope).length > 0) {
           console.error(
             `[guardian] WARNING: found Python files under ${repoRoot} but indexed 0 — they are outside ` +
             `the configured sourceDirectories (${cfg.sourceDirectories.join(', ')}). Add your Python ` +

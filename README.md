@@ -366,7 +366,7 @@ Create `guardian.config.json` at your project root to override auto-detection:
 {
   "sourceDirectories": ["src", "lib"],
   "docsDirectories": ["docs"],
-  "excludeDirectories": ["node_modules", "dist", "build", ".next", "coverage"],
+  "excludeDirectories": ["node_modules", "dist", ".claude", "cdk.out", "build", "__snapshots__", ".next", ".turbo", "coverage", ".venv", "__pycache__", ".pytest_cache", "site-packages", ".mypy_cache", ".ruff_cache", "web/data"],
   "fileExtensions": [".ts", ".tsx", ".py"],
   "tsconfig": "web/tsconfig.json",
   "jsdoc": {
@@ -381,7 +381,11 @@ All fields are optional. The config is re-read on every `rebuild_index`, so chan
 
 **`tsconfig`** — path to your tsconfig, relative to the project root. Set it when the TypeScript app lives in a sub-folder and there is no `tsconfig.json` at the root. Without the field, Guardian uses `<root>/tsconfig.json` when it exists. If there is no tsconfig at all, the TypeScript call graph is still built, with compiler defaults: calls through path aliases (`~/…`, `@/…`) cannot be resolved, so those call edges are missing from `callers`/`callees`/`impact`, and the rebuild reports that phase as `degraded`. A configured path that does not exist is an error for that phase; Guardian never falls back to a different file. One tsconfig per project is supported.
 
-**`excludeDirectories`** — folders left out of the index (both the indexer and the call graph). A value here **replaces** the default list (`node_modules`, `dist`, `.claude`, `cdk.out`, `build`, `__snapshots__`, `.next`, `.turbo`, `coverage`, `.venv`, `__pycache__`, `.pytest_cache`, `site-packages`, `.mypy_cache`, `.ruff_cache`), so include the defaults you still want. An entry with no slash (`node_modules`) matches a folder of that name at any depth. An entry with a slash (`web/data`) matches that one path, relative to the project root.
+**`excludeDirectories`** — folders left out of the index (both the indexer and the call graph). A value here **replaces** the default list (`node_modules`, `dist`, `.claude`, `cdk.out`, `build`, `__snapshots__`, `.next`, `.turbo`, `coverage`, `.venv`, `__pycache__`, `.pytest_cache`, `site-packages`, `.mypy_cache`, `.ruff_cache`), so include the defaults you still want; the example above lists all of them plus one project-specific path. An entry with no slash (`node_modules`) matches a folder of that name at any depth. An entry with a slash (`web/data`, or `./data` for a top-level folder only) matches that one path, relative to the project root.
+
+> **Upgrading from 0.8.2 or earlier:** `excludeDirectories` used to be read and ignored, and the default list always applied. From 0.8.3 your list is used as written. If your config sets the field without the defaults (for example without `.claude`, `.venv` or `site-packages`), add them back, or Claude worktrees and virtualenvs under a source directory will be indexed.
+
+The values of `sourceDirectories`, `docsDirectories`, `excludeDirectories` and `fileExtensions` must be lists of strings. A field with any other shape is ignored (its default is used) and the rebuild reports it.
 
 Without a config file, Guardian auto-detects:
 
@@ -390,7 +394,7 @@ Without a config file, Guardian auto-detects:
 - **Project root** via `git rev-parse --show-toplevel`
 - **Project name** from `package.json`
 
-> **Mixed TypeScript + Python repos:** source-directory auto-detection is driven by `tsconfig.json`, so Python packages living **outside** the TypeScript roots (e.g. an `ml/` directory) are not scanned automatically. Add them explicitly: `"sourceDirectories": ["app", "ml"]`. `.py` is enabled by default in `fileExtensions`; `.venv/`, `__pycache__/`, and Python test files are excluded/skipped for you.
+> **Mixed TypeScript + Python repos:** source-directory auto-detection is driven by `tsconfig.json`, so Python packages living **outside** the TypeScript roots (e.g. an `ml/` directory) are not scanned automatically. Add them explicitly: `"sourceDirectories": ["app", "ml"]`. `.py` is enabled by default in `fileExtensions`. Python test files are always skipped. `.venv/`, `__pycache__/` and `site-packages/` are on the default `excludeDirectories` list, so they are skipped unless you set `excludeDirectories` yourself and leave them out.
 
 ### Reading the Rebuild Result
 
@@ -399,7 +403,7 @@ Without a config file, Guardian auto-detects:
 | Status | Meaning |
 |---|---|
 | `ok` | Ran and did everything |
-| `degraded` | Ran, with a limitation stated next to it (for example: no tsconfig, so calls through path aliases have no call edge; `guardian.config.json` could not be parsed, so auto-detected settings were used; the Python interpreter is missing while Python files are indexed) |
+| `degraded` | Ran, with every limitation stated next to it. For indexing: `guardian.config.json` could not be parsed or a field in it was ignored, a configured source or docs directory does not exist, or Python files could not be indexed (for example the Python interpreter is missing). For the TypeScript call graph: no tsconfig, so calls through path aliases have no call edge. For the Python call graph: it could not run although the project has Python |
 | `failed` | Did not complete; the reason is stated. Counts that phase would have produced read `not run` |
 | `skipped` | Not run because indexing failed, and the call graphs depend on it |
 

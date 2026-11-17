@@ -165,28 +165,31 @@ The MCP server maintains a `.dirty-files` file listing files modified since the 
 A typical full rebuild produces:
 
 ```
-=== Codebase Guardian Index Builder ===
+=== Codebase Guardian Index Builder ({PROJECT_NAME}) ===
 Repository: {PROJECT_ROOT}
-Database: {PROJECT_ROOT}/code-quality.db
+Database: {GUARDIAN_HOME}/indexes/{project-hash}/code-quality.db
 
-Phase 1: Scanning code and documentation...
-  Files scanned: 417
-  Tier 1 (JSDoc): 394
-  Tier 3 (docs): 31
-  Inline comments: 1047
-  Doc sections: 346
-  Embeddings: 425
-  Time: 7.1s
+## Index Rebuild Complete
 
-Phase 2: Building call graph...
-  Loaded 445 source files
-  Found 548 exported functions
-  Found 3654 raw call edges
-  Inserted 893 call edges
-  Tier 2 (exports): 356
-  Call edges: 893
-  Time: 9.1s
+- **Clear old index:** ok
+- **Index code and docs:** ok
+- **TypeScript call graph:** ok
+- **Python call graph:** ok (no Python files indexed)
+- **Validation cache:** ok
 
-=== Build complete in 16.2s ===
-Total indexed: 781 entries
+**Files scanned:** 41
+**Files skipped (unchanged):** 0
+**Tier 1 (JSDoc):** 126
+**Tier 2 (exports):** 21
+**Tier 3 (docs):** 3
+**Embeddings generated:** 129
+**Call edges:** 108
+**Python call edges:** 0
+**Inline comments:** 19
+**Doc sections:** 50
+**Validation cache:** already clear
+
+=== Finished in 2.2s ===
 ```
+
+The `rebuild_index` MCP tool returns the same report (from the heading down). The phases are run by `src/mcp-server/rebuild.ts`. Each one ends `ok`, `degraded`, `failed` or `skipped`, with the reason in brackets; a failed phase does not stop the ones after it, and the heading reads "Index Rebuild Finished With Problems" unless every phase is `ok`. The CLI exits non-zero when any phase failed. See "Reading the Rebuild Result" in the README.

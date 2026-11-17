@@ -91,6 +91,19 @@ The walker in `indexer.ts` becomes the single source of "which files are in the 
 
 `excludeDirectories` replaces the hard-coded `WALK_EXCLUDE_DIRS`. The default becomes today's walker list (which is a superset of the current `DEFAULT_EXCLUDE`), so repos without the field behave as now. Like every other field, a value in `guardian.config.json` replaces the default. An entry with no slash matches a folder of that name at any depth (`node_modules`); an entry with a slash matches that path relative to the git root (`web/data`).
 
+### 5. Added after the whole-branch review (2026-11-16)
+
+The review found four ways the first implementation still broke the anti-goal or the documented rules. All are fixed:
+
+- **Python that was never indexed read as complete.** With no Python interpreter, no Python rows are written, so "degraded when the index holds Python rows" could never fire. The index phase now counts Python files it could not extract and is `degraded` when the count is non-zero; the Python call graph is `degraded` when it could not run and the project has Python by either measure.
+- **A configured source or docs directory that does not exist** was walked as empty. The index phase is now `degraded` and names the directory.
+- **`./data` and `/data` matched at any depth.** The leading prefix was stripped before deciding whether the entry was a path. An entry is now a path if it contains a slash before the prefix is stripped, so `./data` means the top-level folder only.
+- **The four list fields were not validated.** `"excludeDirectories": [5]` threw mid-rebuild after the old index was cleared. A list field with the wrong shape is now ignored, its default is used, and the rebuild reports it. A config file whose root is not a JSON object is reported the same way as one that is not JSON.
+
+When the index phase has more than one limitation, the report lists all of them.
+
+**Open decision for Austin (not changed):** `excludeDirectories` replaces the default list, as approved. Before 0.8.3 the field was ignored and the 15 defaults always applied, so every existing config that sets the field effectively had "add to the defaults" behaviour and changes on upgrade. The README example and the template now list all 15 defaults and the README has an upgrade note. Whether a configured list should add to the defaults instead is Austin's call.
+
 ## Calls I made (not decisions Austin stated)
 
 - No tsconfig and no field → compiler defaults reported as degraded, instead of skipping the TypeScript call graph.

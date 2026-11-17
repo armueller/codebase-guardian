@@ -75,6 +75,47 @@ describe('config file errors', () => {
   });
 });
 
+describe('config field validation', () => {
+  for (const [field, bad] of [
+    ['excludeDirectories', [5]],
+    ['excludeDirectories', 'node_modules'],
+    ['sourceDirectories', 'src'],
+    ['docsDirectories', { a: 1 }],
+    ['fileExtensions', ['.ts', 7]],
+  ] as const) {
+    it(`ignores ${field} = ${JSON.stringify(bad)} with a warning, and uses the default`, () => {
+      const root = makeRoot();
+      put(root, 'guardian.config.json', JSON.stringify({ [field]: bad }));
+      const config = reloadConfig(root);
+      const fresh = reloadConfig(makeRoot());
+
+      assert.deepEqual(config[field], fresh[field]);
+      assert.deepEqual(config.configWarnings, [
+        `"${field}" in guardian.config.json must be a list of strings; the default was used`,
+      ]);
+      assert.equal(config.configFileError, null);
+    });
+  }
+
+  it('has no warnings for a valid config', () => {
+    const root = makeRoot();
+    put(root, 'guardian.config.json', JSON.stringify({ excludeDirectories: ['x'], sourceDirectories: ['.'] }));
+    const config = reloadConfig(root);
+    assert.deepEqual(config.configWarnings, []);
+    assert.deepEqual(config.excludeDirectories, ['x']);
+  });
+
+  for (const rootValue of ['[]', 'null', '"text"', '5']) {
+    it(`reports a config file whose root is ${rootValue}`, () => {
+      const root = makeRoot();
+      put(root, 'guardian.config.json', rootValue);
+      const config = reloadConfig(root);
+      assert.equal(config.configFileError, 'the file must contain a JSON object');
+      assert.deepEqual(config.sourceDirectories, ['.']);
+    });
+  }
+});
+
 describe('reloadConfig', () => {
   it('sees a guardian.config.json written after the first resolve, and refreshes the cache', () => {
     const root = makeRoot();

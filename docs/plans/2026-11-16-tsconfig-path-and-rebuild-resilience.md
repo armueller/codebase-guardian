@@ -32,6 +32,17 @@ All six tasks are done on `fix/tsconfig-path-and-rebuild-resilience`. Suite: 414
 - **Real-case Tier 3 is 3, not 2**: the other repo gained a third plan doc after this plan was written.
 - **Working with the edit hook in this repo:** a function's JSDoc, signature and body must change in one Edit. The hook compares the docs with the body after every individual edit and denies a half-finished change.
 
+**Whole-branch review (fresh reviewer): "merge with fixes", no critical findings.** Fixed in one pass, each with a test that failed first; suite 477 passing afterwards:
+
+- A Python project with no interpreter read "Index Rebuild Complete" with nothing indexed. The index phase now counts Python files it could not extract and reports degraded; so does the Python call graph.
+- A configured source or docs directory that does not exist is now reported (index phase degraded, directory named).
+- `./data` and `/data` in `excludeDirectories` matched at any depth; they now mean the top-level folder only.
+- `sourceDirectories`, `docsDirectories`, `excludeDirectories` and `fileExtensions` are validated; a wrong-shaped value is ignored with a warning instead of throwing mid-rebuild. A config file whose root is not an object is reported.
+- The exclusion test at the call-graph level was vacuous (it used `node_modules`, which export discovery filters by name anyway). It now uses `build/` and a path-style entry.
+- Docs: README example and template list all 15 default excludes; upgrade note added; `docs/indexing-pipeline.md` sample output and `docs/architecture.md` file list updated.
+
+Open for Austin: whether a configured `excludeDirectories` should add to the defaults instead of replacing them (see the spec, section 5). Deferred minors are listed in the hand-off message.
+
 Not done here, by design: push, tag, publish. The installed plugin stays on 0.8.2 until Austin releases 0.8.3.
 
 ## Global Constraints

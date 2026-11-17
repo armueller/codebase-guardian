@@ -3,7 +3,7 @@
   "_comment": "Optional per-project config. Place at project root as guardian.config.json. All fields are optional — auto-detection is used for anything not specified. Not shown below: \"tsconfig\" (e.g. \"web/tsconfig.json\") — path to your tsconfig relative to the project root; set it only when there is no tsconfig.json at the root. excludeDirectories replaces the default list: a bare name matches at any depth, an entry with a slash matches that one path from the project root.",
   "sourceDirectories": ["src"],
   "docsDirectories": ["docs"],
-  "excludeDirectories": ["node_modules", "dist", "build", ".next", ".turbo", "coverage", ".venv", "__pycache__", ".pytest_cache", "site-packages", ".mypy_cache", ".ruff_cache"],
+  "excludeDirectories": ["node_modules", "dist", ".claude", "cdk.out", "build", "__snapshots__", ".next", ".turbo", "coverage", ".venv", "__pycache__", ".pytest_cache", "site-packages", ".mypy_cache", ".ruff_cache"],
   "fileExtensions": [".ts", ".tsx", ".py"],
   "jsdoc": {
     "requiredTags": ["what", "how", "why", "sideeffects", "systemlayer", "domain", "tags"],

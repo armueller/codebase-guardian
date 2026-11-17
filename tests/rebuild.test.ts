@@ -7,13 +7,14 @@ import { reloadConfig, type GuardianConfig } from '../src/config.js';
 import { openDatabase, insertFunction } from '../src/mcp-server/db.js';
 import type { IndexStats } from '../src/mcp-server/indexer.js';
 import { runRebuild, formatRebuildReport, type RebuildDeps, type PhaseName } from '../src/mcp-server/rebuild.js';
-import { makeTsSubdirRepo } from './helpers/ts-subdir-repo.js';
+import { makeTsSubdirRepo, putFiles } from './helpers/ts-subdir-repo.js';
 
 type Db = ReturnType<typeof openDatabase>;
 
 const STATS: IndexStats = {
   filesScanned: 3, tier1Added: 2, tier2Added: 0, tier3Added: 1,
   embeddingsGenerated: 3, filesSkipped: 0, commentsExtracted: 4, docSectionsCreated: 5,
+  pythonFilesSkipped: 0,
 };
 
 /** Stub deps that all succeed, recording which ones ran. Individual tests override entries. */
@@ -192,6 +193,63 @@ describe('runRebuild', () => {
     db.close();
   });
 
+  it('marks indexing degraded, naming the directory, when a configured directory does not exist', async () => {
+    const db: Db = openDatabase(':memory:');
+    const config = { ...emptyConfig(), sourceDirectories: ['.', 'web/ap'], docsDirectories: ['dox'] };
+    const result = await runRebuild(db, config, stubs([]));
+
+    assert.equal(statusOf(result, 'index'), 'degraded');
+    assert.equal(detailOf(result, 'index'), 'configured directories do not exist: web/ap, dox');
+    assert.equal(result.allOk, false);
+    assert.equal(result.indexingFailed, false);
+    db.close();
+  });
+
+  it('marks indexing degraded with a config warning', async () => {
+    const db: Db = openDatabase(':memory:');
+    const warning = '"excludeDirectories" in guardian.config.json must be a list of strings; the default was used';
+    const result = await runRebuild(db, { ...emptyConfig(), configWarnings: [warning] }, stubs([]));
+
+    assert.equal(statusOf(result, 'index'), 'degraded');
+    assert.equal(detailOf(result, 'index'), warning);
+    db.close();
+  });
+
+  it('marks indexing and the Python call graph degraded when Python files could not be indexed', async () => {
+    const db: Db = openDatabase(':memory:');
+    const result = await runRebuild(db, emptyConfig(), stubs([], {
+      buildIndex: async () => ({ ...STATS, pythonFilesSkipped: 2 }),
+      buildPythonCallGraph: async () => ({ edgesCreated: 0, note: 'Python interpreter not found' }),
+    }));
+
+    assert.equal(statusOf(result, 'index'), 'degraded');
+    assert.equal(
+      detailOf(result, 'index'),
+      '2 Python files were not indexed (extraction failed, or the Python interpreter is missing)',
+    );
+    assert.equal(statusOf(result, 'py-call-graph'), 'degraded');
+    assert.equal(detailOf(result, 'py-call-graph'), 'Python interpreter not found');
+    assert.equal(result.allOk, false);
+    assert.equal(formatRebuildReport(result)[0], '## Index Rebuild Finished With Problems');
+    db.close();
+  });
+
+  it('lists every reason when indexing is degraded for more than one', async () => {
+    const db: Db = openDatabase(':memory:');
+    const config = { ...emptyConfig(), configFileError: 'Unexpected token', sourceDirectories: ['.', 'nope'] };
+    const result = await runRebuild(db, config, stubs([], {
+      buildIndex: async () => ({ ...STATS, pythonFilesSkipped: 1 }),
+    }));
+
+    assert.equal(
+      detailOf(result, 'index'),
+      'guardian.config.json could not be parsed (Unexpected token); auto-detected settings were used; ' +
+      'configured directory does not exist: nope; ' +
+      '1 Python file was not indexed (extraction failed, or the Python interpreter is missing)',
+    );
+    db.close();
+  });
+
   it('passes the given config to the phases that read project settings', async () => {
     const db: Db = openDatabase(':memory:');
     const config = emptyConfig();
@@ -211,6 +269,31 @@ describe('runRebuild', () => {
 });
 
 describe('runRebuild with the real phases', () => {
+  it('does not read complete for a Python project when there is no Python interpreter', async () => {
+    const originalHome = process.env.GUARDIAN_HOME;
+    process.env.GUARDIAN_HOME = mkdtempSync(path.join(tmpdir(), 'guardian-home-nopy-'));
+    try {
+      const root = mkdtempSync(path.join(tmpdir(), 'guardian-pyproject-'));
+      putFiles(root, {
+        'guardian.config.json': JSON.stringify({ sourceDirectories: ['pkg'] }),
+        'pkg/mod.py': '"""A module.\n\nDomain: demo\n"""\n\ndef f():\n    """Do f."""\n    return 1\n',
+      });
+      const db: Db = openDatabase(':memory:');
+      const result = await runRebuild(db, reloadConfig(root));
+
+      assert.equal(statusOf(result, 'index'), 'degraded');
+      assert.match(detailOf(result, 'index') ?? '', /^1 Python file was not indexed/);
+      assert.equal(statusOf(result, 'py-call-graph'), 'degraded');
+      assert.equal(detailOf(result, 'py-call-graph'), 'Python interpreter not found');
+      assert.equal(result.allOk, false);
+      assert.equal(formatRebuildReport(result)[0], '## Index Rebuild Finished With Problems');
+      db.close();
+    } finally {
+      if (originalHome === undefined) delete process.env.GUARDIAN_HOME;
+      else process.env.GUARDIAN_HOME = originalHome;
+    }
+  });
+
   it('finishes, with every other phase ok, when the configured tsconfig is malformed', async () => {
     const originalHome = process.env.GUARDIAN_HOME;
     // An empty guardian home: no Python interpreter there, and nothing of the user's to clear.

@@ -37,8 +37,8 @@ export interface WalkScope {
 
 /**
  * @what Reports whether a folder is left out of the index by the project's excludeDirectories
- * @how Normalises each entry (backslashes to slashes; drops a leading "./" or "/" and trailing slashes). An entry with no slash matches a folder of that name at any depth, compared against the last segment of relDir. An entry with a slash matches only when it equals relDir exactly.
- * @why A bare name covers folders that recur at any depth (node_modules, __pycache__); a path names one specific folder. Both forms appear in real configs, and before this neither was honoured.
+ * @how Normalises each entry (backslashes to slashes, trailing slashes dropped), then decides its kind before stripping any leading "./" or "/": an entry that still contains a slash is a path and matches only when it equals relDir exactly; an entry with no slash is a bare name and matches a folder of that name at any depth, compared against the last segment of relDir. So "./data" and "/data" mean the top-level data folder only, while "data" means every folder named data.
+ * @why A bare name covers folders that recur at any depth (node_modules, __pycache__); a path names one specific folder. Both forms appear in real configs, and before this neither was honoured. Deciding the kind after stripping the prefix would turn "./data" into a bare name and silently drop nested folders from the index.
  *
  * @param {string} relDir Folder path relative to the project root, '/'-separated
  * @param {string[]} exclude The project's excludeDirectories
@@ -52,9 +52,11 @@ export interface WalkScope {
 export function isExcludedDir(relDir: string, exclude: string[]): boolean {
   const name = relDir.split('/').pop() ?? '';
   for (const raw of exclude) {
-    const entry = raw.replace(/\\/g, '/').replace(/^(\.?\/)+/, '').replace(/\/+$/, '');
-    if (entry === '') continue;
-    if (entry.includes('/')) {
+    const normalized = raw.replace(/\\/g, '/').replace(/\/+$/, '');
+    const isPath = normalized.includes('/');
+    const entry = normalized.replace(/^(\.?\/)+/, '');
+    if (entry === '' || entry === '.') continue;
+    if (isPath) {
       if (entry === relDir) return true;
     } else if (entry === name) {
       return true;
@@ -145,6 +147,29 @@ function findReadmeFiles(dir: string, scope: WalkScope): string[] {
     if (name.toLowerCase() === 'readme.md') files.push(fullPath);
   });
   return files;
+}
+
+/**
+ * @what Lists the configured source and docs directories that are not directories on disk
+ * @how Checks each entry of sourceDirectories, then docsDirectories, against the project root with statSync; an entry that is missing or is a file is returned as written in the config
+ * @why A mistyped directory is walked as empty and silently contributes nothing. The rebuild report uses this list to say so, instead of reading complete with part of the project left out.
+ *
+ * @param {GuardianConfig} config Resolved project config
+ * @returns {string[]} The configured entries that do not exist as directories, source directories first
+ *
+ * @sideeffects Reads the filesystem (stat only)
+ * @systemlayer Data Layer
+ * @domain code-index, file-walk
+ * @tags source-directories, docs-directories, validation, rebuild-report
+ */
+export function missingConfiguredDirectories(config: GuardianConfig): string[] {
+  return [...config.sourceDirectories, ...config.docsDirectories].filter(dir => {
+    try {
+      return !fs.statSync(path.join(config.projectRoot, dir)).isDirectory();
+    } catch {
+      return true;
+    }
+  });
 }
 
 /**

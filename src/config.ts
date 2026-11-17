@@ -57,8 +57,10 @@ export interface GuardianConfig {
   };
   /** Which tsconfig the TypeScript call graph and source-directory detection use */
   tsconfig: TsconfigResolution;
-  /** Parse error for a guardian.config.json that exists but could not be read as JSON, else null */
+  /** Why a guardian.config.json that exists was not used at all (not JSON, or not a JSON object), else null */
   configFileError: string | null;
+  /** One sentence per config field that was ignored because its value has the wrong shape */
+  configWarnings: string[];
 }
 
 /**
@@ -77,17 +79,18 @@ export type TsconfigResolution =
   | { kind: 'invalid'; reason: string };
 
 /**
- * @what Shape of guardian.config.json as read from disk (all fields optional; `tsconfig` is typed unknown until validated)
+ * @what Shape of guardian.config.json as read from disk (all fields optional; `tsconfig` and the four list fields are typed unknown until validated)
  * @domain config
  * @tags guardian-config, config-file, json, user-settings
  */
 interface GuardianConfigFile {
   /** Path to the tsconfig, relative to the project root. Typed unknown: it is validated, not trusted. */
   tsconfig?: unknown;
-  sourceDirectories?: string[];
-  docsDirectories?: string[];
-  excludeDirectories?: string[];
-  fileExtensions?: string[];
+  /** The four list fields are typed unknown: each must be a list of strings, checked by stringListField. */
+  sourceDirectories?: unknown;
+  docsDirectories?: unknown;
+  excludeDirectories?: unknown;
+  fileExtensions?: unknown;
   jsdoc?: {
     requiredTags?: string[];
     minTags?: number;
@@ -310,12 +313,12 @@ function detectProjectName(projectRoot: string): string {
 // ─── Config File Loading ─────────────────────────────────────────────────────
 
 /**
- * @what Loads guardian.config.json from the project root, keeping the parse error when it cannot be read
- * @how Returns `{ file: null, error: null }` when the file is absent, the parsed object when it is valid JSON, and `{ file: null, error }` when reading or parsing throws
+ * @what Loads guardian.config.json from the project root, keeping the reason when it cannot be used
+ * @how Returns `{ file: null, error: null }` when the file is absent, the parsed object when it is a JSON object, and `{ file: null, error }` when reading or parsing throws or the JSON is not an object (a list, null, a string, a number)
  * @why A config file that exists but is ignored must be reportable. Returning only null made a broken file indistinguishable from a missing one.
  *
  * @param {string} projectRoot Absolute project root
- * @returns {{ file: GuardianConfigFile | null; error: string | null }} Parsed config and the parse error, if any
+ * @returns {{ file: GuardianConfigFile | null; error: string | null }} Parsed config and the reason it was not used, if any
  *
  * @sideeffects Reads guardian.config.json from disk
  * @systemlayer Configuration
@@ -327,10 +330,36 @@ function loadConfigFile(projectRoot: string): { file: GuardianConfigFile | null;
   if (!fs.existsSync(configPath)) return { file: null, error: null };
 
   try {
-    return { file: JSON.parse(fs.readFileSync(configPath, 'utf-8')), error: null };
+    const parsed: unknown = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { file: null, error: 'the file must contain a JSON object' };
+    }
+    return { file: parsed as GuardianConfigFile, error: null };
   } catch (err) {
     return { file: null, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/**
+ * @what Validates a config field that must be a list of strings
+ * @how Returns undefined when the field is absent; the value when it is an array whose entries are all strings; otherwise records a warning sentence naming the field and returns undefined, so the caller falls back to the default
+ * @why These fields are now consumed directly (excludeDirectories drives the file walk). A wrong shape such as [5] or "node_modules" used to be harmless and would now throw mid-rebuild, after the old index was cleared, or silently iterate a string's characters.
+ *
+ * @param {unknown} value The raw field value from guardian.config.json
+ * @param {string} name The field name, for the warning
+ * @param {string[]} warnings Accumulator the warning sentence is pushed onto
+ * @returns {string[] | undefined} The validated list, or undefined when absent or invalid
+ *
+ * @sideeffects Pushes onto the warnings array
+ * @systemlayer Configuration
+ * @domain config
+ * @tags guardian-config, validation, string-list, config-warning
+ */
+function stringListField(value: unknown, name: string, warnings: string[]): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (Array.isArray(value) && value.every(entry => typeof entry === 'string')) return value as string[];
+  warnings.push(`"${name}" in guardian.config.json must be a list of strings; the default was used`);
+  return undefined;
 }
 
 // ─── Config Cache ────────────────────────────────────────────────────────────
@@ -380,7 +409,7 @@ export function resolveConfig(fromPath?: string): GuardianConfig {
 
 /**
  * @what Rebuilds the GuardianConfig for a known project root from disk and replaces its cache entry
- * @how Re-reads guardian.config.json (recording a parse error on the config), resolves the tsconfig (recording an invalid one with its reason), re-runs auto-detection for unset fields without re-detecting the root itself, then overwrites the cached config so later resolveConfig calls for that root see the fresh one
+ * @how Re-reads guardian.config.json (recording on the config why the file was unusable, if it was), resolves the tsconfig (recording an invalid one with its reason), validates the four list fields (a wrong-shaped one is ignored with a warning on the config), re-runs auto-detection for unset or ignored fields without re-detecting the root itself, then overwrites the cached config so later resolveConfig calls for that root see the fresh one
  * @why resolveConfig caches for the life of the process, which is right for the short-lived hook but wrong for the long-lived MCP server: a config file written after startup was ignored until the server restarted
  *
  * @param {string} projectRoot Absolute project root, as previously detected
@@ -399,6 +428,12 @@ export function reloadConfig(projectRoot: string): GuardianConfig {
   const tsconfig = resolveTsconfig(projectRoot, configFile?.tsconfig);
   const tsconfigFile = tsconfig.kind === 'file' ? tsconfig.path : null;
 
+  const configWarnings: string[] = [];
+  const sourceDirectories = stringListField(configFile?.sourceDirectories, 'sourceDirectories', configWarnings);
+  const docsDirectories = stringListField(configFile?.docsDirectories, 'docsDirectories', configWarnings);
+  const excludeDirectories = stringListField(configFile?.excludeDirectories, 'excludeDirectories', configWarnings);
+  const fileExtensions = stringListField(configFile?.fileExtensions, 'fileExtensions', configWarnings);
+
   // Resolve paths
   const guardianHome = getGuardianHome();
   const projectHash = hashProjectRoot(projectRoot);
@@ -411,10 +446,10 @@ export function reloadConfig(projectRoot: string): GuardianConfig {
     projectRoot,
     projectName,
 
-    sourceDirectories: configFile?.sourceDirectories ?? detectSourceDirectories(projectRoot, tsconfigFile),
-    docsDirectories: configFile?.docsDirectories ?? detectDocsDirectories(projectRoot),
-    excludeDirectories: configFile?.excludeDirectories ?? DEFAULT_EXCLUDE,
-    fileExtensions: configFile?.fileExtensions ?? DEFAULT_EXTENSIONS,
+    sourceDirectories: sourceDirectories ?? detectSourceDirectories(projectRoot, tsconfigFile),
+    docsDirectories: docsDirectories ?? detectDocsDirectories(projectRoot),
+    excludeDirectories: excludeDirectories ?? DEFAULT_EXCLUDE,
+    fileExtensions: fileExtensions ?? DEFAULT_EXTENSIONS,
 
     databasePath: path.join(indexDir, 'code-quality.db'),
     installPath: guardianHome,
@@ -433,6 +468,7 @@ export function reloadConfig(projectRoot: string): GuardianConfig {
     },
     tsconfig,
     configFileError,
+    configWarnings,
   };
 
   configCache.set(projectRoot, config);
