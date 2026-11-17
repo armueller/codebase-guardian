@@ -29,7 +29,7 @@ DB_PATH="$GUARDIAN_HOME/indexes/$PROJECT_HASH/code-quality.db"
 Check if the database exists. If not, inform the user they need to build the index first:
 ```
 The code index has not been built for this project yet.
-Run the MCP tool `rebuild_index` (with skip_embeddings=true for speed) to build it first, then run /audit again.
+Run the MCP tool `rebuild_index` to build it first, then run /audit again. Read the per-phase lines in its result: if it says "Not Started", fix the configuration it lists; if a phase is degraded or failed, the index is usable but incomplete in the way it states.
 ```
 
 ## Step 2: Scan Source Files

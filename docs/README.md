@@ -22,7 +22,7 @@ A Model Context Protocol (MCP) server that provides hybrid keyword + vector sear
 │                  search, callers,                              │   │
 │                  search_comments, etc.                         │   │
 │                                                               │   │
-│  CLI ──────► build-index.ts ──► indexer.ts ──► call-graph.ts ─┘   │
+│  CLI ──────► build-index.ts ──► rebuild.ts ──► (all phases) ──┘   │
 │                                     │                              │
 │                                     ▼                              │
 │                               embeddings.ts                        │
@@ -44,11 +44,8 @@ A Model Context Protocol (MCP) server that provides hybrid keyword + vector sear
 ## Quick Reference
 
 ```bash
-# Full rebuild (with embeddings, ~16s)
+# Full rebuild (always with embeddings)
 npx tsx src/mcp-server/build-index.ts
-
-# Fast rebuild (skip embeddings, ~7s)
-npx tsx src/mcp-server/build-index.ts --skip-embeddings
 
 # Compile TypeScript (required after source changes for MCP server)
 cd .claude/mcp-servers/code-index && npm run build

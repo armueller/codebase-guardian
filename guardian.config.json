@@ -1,0 +1,4 @@
+{
+  "_comment": "Codebase Guardian indexing itself. The Python helper (python/guardian_py) sits outside the TypeScript source directory, so it is listed explicitly; without this the rebuild reports that the project's Python is outside the source directories.",
+  "sourceDirectories": ["src", "python"]
+}

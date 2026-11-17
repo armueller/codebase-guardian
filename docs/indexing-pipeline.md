@@ -1,27 +1,24 @@
 # Indexing Pipeline
 
-The indexing pipeline scans the the codebase and documentation, extracts structured metadata, and stores it in the SQLite database. It runs in two phases: code scanning (Phase 1) and call graph extraction (Phase 2).
+The indexing pipeline scans the the codebase and documentation, extracts structured metadata, and stores it in the SQLite database. A rebuild is run by `src/mcp-server/rebuild.ts`, for both the `rebuild_index` MCP tool and the CLI. It first checks the configuration (a definite error stops the rebuild before anything is cleared), then runs five phases, each reporting its own status: clear the old index, code and doc scanning (Phase 1 below), the TypeScript call graph (Phase 2), the Python call graph, and clearing the validation cache. The files both scanning phases read come from one list, built once per rebuild by `src/mcp-server/file-walk.ts`.
 
 ## Running a Build
 
 ```bash
-# Full rebuild with embeddings (~16s)
+# Full rebuild (always with embeddings)
 npx tsx src/mcp-server/build-index.ts
-
-# Fast rebuild without embeddings (~7s)
-npx tsx src/mcp-server/build-index.ts --skip-embeddings
 
 # Set custom repo root
 GUARDIAN_PROJECT_ROOT=/path/to/repo npx tsx src/mcp-server/build-index.ts
 ```
 
-The build script (`build-index.ts`) resolves the repo root from `GUARDIAN_PROJECT_ROOT` env var or by walking up from `__dirname`. The database is created at `{REPO_ROOT}/code-quality.db`.
+The build script (`build-index.ts`) takes the project root from the `GUARDIAN_PROJECT_ROOT` env var, else the git root of the current directory. The database lives outside the repo, at `{GUARDIAN_HOME}/indexes/{project-hash}/code-quality.db`. The script exits non-zero when the rebuild did not start or a phase failed.
 
 ## Phase 1: Code Scanning
 
 ### Tier 1 — JSDoc-Annotated Functions
 
-**Source:** All `.ts` and `.tsx` files under `app/` (excluding `node_modules`, `dist`, `.claude`, `cdk.out`, `build`, `__snapshots__`)
+**Source:** Files with a configured extension (`fileExtensions`) under the configured `sourceDirectories`, taken from the shared file list. Test files are left out, and folders on the exclude list (the built-in defaults plus the project's `excludeDirectories`) are never entered.
 
 **Detection:** Regex matches JSDoc blocks containing `@domain`:
 
@@ -46,9 +43,9 @@ The build script (`build-index.ts`) resolves the repo root from `GUARDIAN_PROJEC
 
 ### Tier 3 — Documentation Files
 
-**Source:** All `.md` files under `docs/` subdirectories (`architecture/`, `best-practices/`, `patterns/`)
+**Source:** All `.md` files under the configured `docsDirectories`, plus every `README.md` under the source directories, taken from the shared file list
 
-**Detection:** Files ending in `.md` found by `findReadmeFiles()`
+**Detection:** The doc files in the shared file list (`listIndexFiles()` in `file-walk.ts`)
 
 **Extraction per document:**
 

@@ -60,7 +60,7 @@ Resolution, in order:
 | Case | TypeScript call graph | Reported as |
 |---|---|---|
 | `tsconfig` set, file exists | built with that file | ok |
-| `tsconfig` set, file missing | not built | failed: `tsconfig "<path>" from guardian.config.json does not exist` |
+| `tsconfig` set, file missing | the rebuild does not start (changed 2026-11-17, see section 6; first built as a failed phase) | `tsconfig "<path>" from guardian.config.json does not exist` |
 | not set, `<root>/tsconfig.json` exists | built with it (today's behaviour) | ok |
 | not set, no root tsconfig, TypeScript files present | built with compiler defaults | degraded: no tsconfig found, path aliases are not resolved; set `"tsconfig"` |
 | no TypeScript files in the source directories | nothing to build | ok, noted as "no TypeScript files" |
@@ -103,6 +103,28 @@ The review found four ways the first implementation still broke the anti-goal or
 When the index phase has more than one limitation, the report lists all of them.
 
 **Decided by Austin on 2026-11-17: `excludeDirectories` adds to the defaults.** The first implementation replaced the default list, as originally approved. The review pointed out that before 0.8.3 the field was ignored and the 15 defaults always applied, so every existing config that sets the field effectively had "add" behaviour, and under "replace" a config without `.claude`, `.venv` or `site-packages` would start indexing Claude worktrees and virtualenvs. With "add", upgrading can only skip more folders. The cost is that a folder named like a default (`build`, `dist`) can never be indexed from inside a source directory; Austin confirmed those should not be indexed anyway. The README example and the template now list only project-specific entries.
+
+### 6. After the PR audit (2026-11-17)
+
+`/pr-audit` ran on the PR and Austin's instruction was to fix everything it raised. The changes to the design:
+
+- **A rebuild never starts from a configuration it knows is broken.** This replaces "a missing configured tsconfig fails that phase" (section 1) and "an unparseable config file gives a degraded rebuild with auto-detected settings" (sections 2 and 5). The audit showed that a typo in `tsconfig` wiped a good index and replaced it with one that had no TypeScript call graph. The same is true of every definite config error, so they are all checked before anything is cleared: an unusable `guardian.config.json`, a field with the wrong shape, an invalid tsconfig, a tsconfig that cannot be loaded. The result reads "Index Rebuild Not Started", lists the problems, and the existing index is untouched. Things that are not definitely errors still run and are reported as `degraded`: a configured directory that does not exist, Python that could not be extracted. The hook is unaffected and stays fail-open; it uses the default for a setting it could not read.
+- **`tsconfig` must be a file inside the project root.** A folder, a path outside the root, and the root itself are `invalid`. `null` means not set, and the value is trimmed. Before this, `"tsconfig": "."` made source-directory detection return `..` and the rebuild indexed sibling folders.
+- **Auto-detection keeps only folders.** A tsconfig `include` entry that names a file (`vite.config.ts`, `next-env.d.ts`) was returned as a source directory. Tsconfig files are read with a small comment-tolerant parser, because `tsc --init` writes comments and the plain JSON parser silently lost the `include` list. The parser is hand-written on purpose: config loading must not import the TypeScript compiler, since the search-hint hook resolves config on every grep.
+- **More ways the call graph is reported as degraded.** A tsconfig that loads with errors (a missing `extends` target) and a solution-style tsconfig (`references`, no `paths` of its own) both built a graph with alias edges missing and read `ok`.
+- **More ways indexing is reported as degraded.** Python that sits outside the source directories when no Python was indexed (this repo itself was the example; it now has a `guardian.config.json` listing `src` and `python`), folders that could not be read, a rebuild that found no code files, and the names of the first few Python files that could not be indexed.
+- **The rebuild's outcome is stored** in the metadata table, and `index_status` shows it.
+- **The file list is computed once per rebuild** and passed to both phases, and `repoRoot` must equal the config's project root. The incremental path asks `classifyIndexFile` for the verdict a full walk would give each file, so auto-sync can no longer index a file a full rebuild skips.
+- **The Python call graph takes its exclude list from Node**, so `src/config.ts` is the one source for both languages.
+- **Every field in `guardian.config.json` is validated**, including the `jsdoc` and `searchHint` groups the hook reads, each exclude entry (trimmed; a glob pattern is an error) and each file extension (must start with a dot).
+
+Left as it was, with the reason:
+
+- Export discovery keeps its old path filter (`node_modules`, `.test.`, `__`) for Tier 2 only. Removing it would add Tier 2 rows to existing indexes that have `__mocks__`-style folders.
+- A call graph that fails while it runs (after the preflight passed) still drops Tier 2 discovery along with the edges: both come from one compiler project.
+- The call graph reads the same extensions as the indexer, so a config listing only `.ts` gets no `.tsx` Tier 2 rows. That follows from the single file list.
+
+Still out of scope: more than one TypeScript root per project; applying `excludeDirectories` to the git-based staleness count; the hook's function-extractor false positives (tracked in issue #25).
 
 ## Calls I made (not decisions Austin stated)
 
