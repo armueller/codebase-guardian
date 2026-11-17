@@ -45,6 +45,60 @@ All six tasks are done on `fix/tsconfig-path-and-rebuild-resilience`. Suite: 414
 
 Not done here, by design: push, tag, publish. The installed plugin stays on 0.8.2 until Austin releases 0.8.3.
 
+## PR Audit Fix Pass (2026-11-17)
+
+`/pr-audit` ran on PR #24 (marker comment on the PR). Austin's instruction: fix everything. Each item is ticked when its fix is committed; decisions made along the way are marked **Call**.
+
+**Rule adopted for config errors (Call, extends DC-1):** a rebuild never starts from a configuration it knows is broken. A definite config error (unusable `guardian.config.json`, a wrong-shaped field, an invalid or unloadable tsconfig) stops the rebuild before anything is cleared; the report reads "Index Rebuild Not Started" and the existing index is untouched. Things that are not definitely errors (a configured directory that does not exist, Python that could not be extracted) still run and are reported as `degraded`. This changes the earlier design, where an unparseable config file gave a degraded rebuild with auto-detected settings.
+
+Bugs and risks
+- [ ] BUG-1: source-directory auto-detection keeps only tsconfig `include` entries that are directories.
+- [ ] RISK-1: `tsconfig` must be a file inside the project root; `null` means not set; the value is trimmed.
+- [ ] RISK-2: the TypeScript call graph is `degraded` when the tsconfig loads with errors (for example a missing `extends` target) or is solution-style (`references`, no `paths`).
+
+Pattern violations
+- [ ] PV-1: no literal `@domain` in `buildIndex`'s prose (check all new JSDoc for the same).
+- [ ] PV-2: one JSDoc block on `IndexStats`.
+- [ ] PV-3 / SUG-9: the Python call graph takes its exclude list from Node; `callgraph.py` comment and README corrected.
+- [ ] PV-4: tests for the CLI exit code, the dirty-files clear, and config reload in `index_status` and auto-sync.
+
+Design concerns
+- [ ] DC-1: preflight (see the rule above).
+- [ ] DC-2: per-phase results stored in the metadata table; `index_status` shows the last rebuild's status.
+- [ ] DC-3: the file list is computed once per rebuild and passed to both phases; `repoRoot` must equal the config's project root.
+- [ ] DC-4: `runRebuild` and `buildCallGraph` split into smaller functions; tsconfig resolution moved out of `config.ts` into a dependency-free `src/tsconfig-resolution.ts` (it must stay light: the search-hint hook loads config on every grep).
+
+Missing pieces
+- [ ] MP-1: Python outside `sourceDirectories` is an index limitation in the report, not only a stderr warning. This repo gets a `guardian.config.json` listing `src` and `python` (**Call**).
+- [ ] MP-2: CLAUDE.md architecture notes for the rebuild pipeline, config freshness, no-fallback tsconfig, single file list, additive excludes.
+- [ ] MP-3: stale passages in `docs/indexing-pipeline.md`, `docs/architecture.md`, `docs/README.md`, `docs/mcp-tools.md`.
+- [ ] MP-4: GitHub issue for the hook's function-extractor false positives (out of scope for this branch).
+
+Suggestions
+- [ ] SUG-1: unreadable directories are counted and reported.
+- [ ] SUG-2: a configured directory that cannot be read is not reported as "does not exist".
+- [ ] SUG-3: the incremental path applies `fileExtensions` and `excludeDirectories`.
+- [ ] SUG-4 / Q9: `runRebuild` owns the dirty-files clear (only after indexing succeeded); the CLI closes the database in `finally`.
+- [ ] SUG-5: one helper for the Python-row count.
+- [ ] SUG-6: shared helpers for the root-relative path and the error message; `cause` on the tsconfig load error.
+- [ ] SUG-7: tests remove their temp folders; one `putFiles`; tighter assertion and captured stderr in the server test.
+- [ ] SUG-8: doc drift in `runRebuild`, `GuardianConfig`, `resolveConfig`.
+
+Open questions, answered
+- [ ] Q1: tsconfig `include` is read with a comment-tolerant parser.
+- [ ] Q2: exclude entries are trimmed; an entry with a glob character is a config error.
+- [ ] Q3: a rebuild that finds no code files is reported; `fileExtensions` entries must start with a dot.
+- [ ] Q4: covered by RISK-1.
+- [ ] Q5: no code change. An invalid tsconfig now stops the rebuild before it starts; a call graph that fails at run time still drops Tier 2 discovery, because discovery and edges share one compiler project.
+- [ ] Q6: no code change; intended (the call graph reads the same file list as the indexer). Added to the PR's behaviour changes.
+- [ ] Q7: no code change (**Call**). Export discovery keeps its `node_modules` / `.test.` / `__` path filter: removing it would add Tier 2 rows to existing indexes. A comment explains why it remains.
+- [ ] Q8: `jsdoc` and `searchHint` fields are validated like the list fields.
+- [ ] Q10: the report names the first few Python files that were not indexed.
+- [ ] Q11: the new module's domain is `index-rebuild`, matching `validation-artifacts.ts`.
+- [ ] Q12: the `pr-audit` and `audit` skills tell the agent to read the phase lines; the non-existent `skip_embeddings` argument is removed.
+- [ ] Q13: the deferred items are listed here and in the PR, not in a hand-off message.
+- [ ] Q14: the committed `plan.vaultDir` points at `docs/plans`; the personal path moves to the uncommitted local override.
+
 ## Global Constraints
 
 - Config field name is exactly `"tsconfig"`: one path, relative to the git root. Not a list.
