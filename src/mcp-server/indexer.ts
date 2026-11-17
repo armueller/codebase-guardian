@@ -15,8 +15,8 @@ import {
   setMetadata,
 } from './db.js';
 import { generateEmbeddings, invalidateCache } from './embeddings.js';
-import { resolveConfig } from '../config.js';
-import { isPythonTestFile } from '../shared/py-paths.js';
+import { resolveConfig, type GuardianConfig } from '../config.js';
+import { listIndexFiles, walkDirectory } from './file-walk.js';
 import { locateBodies, maskRanges, type BodyRange } from './ts-bodies.js';
 import { extractPythonFile, type PyExtracted } from './py-index.js';
 
@@ -651,77 +651,7 @@ function parseDocFile(content: string, filePath: string): ParsedDoc | null {
   };
 }
 
-// ─── File Walking ───────────────────────────────────────────────────────────
-
-// Directories skipped by both walkDirectory and findReadmeFiles. Includes common
-// non-source directories plus Python-specific ones (virtualenvs, bytecode caches,
-// tool caches) now that .py files are walked too.
-const WALK_EXCLUDE_DIRS = [
-  'node_modules', 'dist', '.claude', 'cdk.out', 'build', '__snapshots__', '.next', '.turbo', 'coverage',
-  '.venv', '__pycache__', '.pytest_cache', 'site-packages', '.mypy_cache', '.ruff_cache',
-];
-
-
-function walkDirectory(dir: string, extensions: string[]): string[] {
-  const files: string[] = [];
-
-  function walk(currentDir: string): void {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(currentDir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-
-    for (const entry of entries) {
-      const fullPath = path.join(currentDir, entry.name);
-
-      if (entry.isDirectory()) {
-        // Skip common non-source directories
-        if (WALK_EXCLUDE_DIRS.includes(entry.name)) {
-          continue;
-        }
-        walk(fullPath);
-      } else if (entry.isFile()) {
-        const ext = path.extname(entry.name);
-        if (!extensions.includes(ext)) continue;
-        if (entry.name.endsWith('.test.ts') || entry.name.endsWith('.test.tsx')) continue;
-        if (ext === '.py' && isPythonTestFile(path.relative(dir, fullPath))) continue;
-        files.push(fullPath);
-      }
-    }
-  }
-
-  walk(dir);
-  return files;
-}
-
-function findReadmeFiles(dir: string): string[] {
-  const files: string[] = [];
-
-  function walk(currentDir: string): void {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(currentDir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-
-    for (const entry of entries) {
-      const fullPath = path.join(currentDir, entry.name);
-
-      if (entry.isDirectory()) {
-        if (WALK_EXCLUDE_DIRS.includes(entry.name)) continue;
-        walk(fullPath);
-      } else if (entry.isFile() && entry.name.toLowerCase() === 'readme.md') {
-        files.push(fullPath);
-      }
-    }
-  }
-
-  walk(dir);
-  return files;
-}
+// File walking lives in ./file-walk.ts (listIndexFiles), shared with the call graph.
 
 // ─── Python File Indexing ───────────────────────────────────────────────────
 
@@ -865,12 +795,28 @@ async function indexPythonFile(
 
 // ─── Index Building ─────────────────────────────────────────────────────────
 
+/**
+ * @what Indexes a project's code files (Tier 1 JSDoc functions, Python units) and docs (Tier 3) into the database
+ * @how On a full rebuild, reads the file list from listIndexFiles(config) (so excludeDirectories applies and the call graph sees the same files); in incremental mode, processes only the given dirty files. For each code file it replaces that file's rows, parses @domain JSDoc blocks (or hands .py files to indexPythonFile), stores comments and embeddings; for each doc it stores a Tier 3 row plus heading-level sections. Finishes by stamping last_rebuilt and warning when Python files exist but none were indexed.
+ * @why Phase 1 of the rebuild: everything search, callers/callees and the validation hook read comes from these rows
+ *
+ * @param {Database.Database} db Open index database
+ * @param {string} repoRoot Absolute project root; stored file paths are relative to it
+ * @param {{incremental?: boolean, dirtyFiles?: string[], config?: GuardianConfig}} [options] incremental/dirtyFiles select a partial rebuild; config supplies an already-resolved (fresh) project config, defaulting to resolveConfig(repoRoot)
+ * @returns {Promise<IndexStats>} Counts of files scanned and rows, comments, sections and embeddings created
+ *
+ * @sideeffects Reads source and doc files; deletes and inserts rows in the index database; generates embeddings (loads the local model); invalidates the embedding cache; writes index metadata; logs a warning to stderr
+ * @systemlayer Data Layer
+ * @domain code-index, indexer
+ * @tags indexing, jsdoc, python, docs, embeddings, rebuild, incremental
+ */
 export async function buildIndex(
   db: Database.Database,
   repoRoot: string,
   options: {
     incremental?: boolean;
     dirtyFiles?: string[];
+    config?: GuardianConfig;
   } = {}
 ): Promise<IndexStats> {
   const stats: IndexStats = {
@@ -884,9 +830,7 @@ export async function buildIndex(
     docSectionsCreated: 0,
   };
 
-  const config = resolveConfig(repoRoot);
-  const sourceDirs = config.sourceDirectories.map(d => path.join(repoRoot, d));
-  const docsDirs = config.docsDirectories.map(d => path.join(repoRoot, d));
+  const config = options.config ?? resolveConfig(repoRoot);
 
   // Collect files to process
   let codeFiles: string[];
@@ -897,12 +841,8 @@ export async function buildIndex(
     codeFiles = options.dirtyFiles.filter(f => f.endsWith('.ts') || f.endsWith('.tsx') || f.endsWith('.py'));
     docFiles = options.dirtyFiles.filter(f => f.endsWith('.md'));
   } else {
-    // Full rebuild: scan everything
-    codeFiles = sourceDirs.flatMap(dir => walkDirectory(dir, config.fileExtensions));
-    docFiles = [
-      ...docsDirs.flatMap(dir => walkDirectory(dir, ['.md'])),
-      ...sourceDirs.flatMap(dir => findReadmeFiles(dir)),
-    ];
+    // Full rebuild: the shared file list (same files the call graph loads)
+    ({ codeFiles, docFiles } = listIndexFiles(config));
   }
 
   // Process code files (Tier 1)
@@ -1117,10 +1057,11 @@ export async function buildIndex(
   // Best-effort — never fail the build over a diagnostic.
   if (!options.incremental) {
     try {
-      const cfg = resolveConfig(repoRoot);
+      const cfg = config;
       if (cfg.fileExtensions.includes('.py')) {
         const pyCount = (db.prepare("SELECT COUNT(*) AS c FROM functions WHERE language = 'py'").get() as { c: number }).c;
-        if (pyCount === 0 && walkDirectory(repoRoot, ['.py']).length > 0) {
+        const scope = { projectRoot: repoRoot, exclude: cfg.excludeDirectories };
+        if (pyCount === 0 && walkDirectory(repoRoot, ['.py'], scope).length > 0) {
           console.error(
             `[guardian] WARNING: found Python files under ${repoRoot} but indexed 0 — they are outside ` +
             `the configured sourceDirectories (${cfg.sourceDirectories.join(', ')}). Add your Python ` +
