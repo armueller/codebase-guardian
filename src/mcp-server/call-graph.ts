@@ -65,12 +65,13 @@ function listTypeScriptFiles(config: GuardianConfig): string[] {
 
 /**
  * @what Creates the ts-morph project the call graph is extracted from
- * @how Uses the resolved tsconfig's compiler options when there is one (so path aliases resolve) and compiler defaults when there is none, then adds each listed file by exact path. Files are added one by one, not by glob, because route files are often named with glob characters such as [id].ts.
- * @why The tsconfig may sit in a sub-folder or be absent; hard-coding <root>/tsconfig.json made ts-morph throw and aborted the whole rebuild
+ * @how Uses the resolved tsconfig's compiler options when there is one (so path aliases resolve) and compiler defaults when there is none, then adds each listed file by exact path. Files are added one by one, not by glob, because route files are often named with glob characters such as [id].ts. A tsconfig that ts-morph cannot load is rethrown with the file named, relative to the project root.
+ * @why The tsconfig may sit in a sub-folder or be absent; hard-coding <root>/tsconfig.json made ts-morph throw and aborted the whole rebuild. ts-morph's own message for a malformed tsconfig ("',' expected.") does not say which file is wrong.
  *
  * @param {GuardianConfig} config Resolved project config; config.tsconfig must not be `invalid` (the caller rejects that first)
  * @param {string[]} files Absolute paths of the TypeScript files to load
  * @returns {Project} A project holding exactly those files
+ * @throws {Error} `could not load tsconfig "<path>": <reason>` when the tsconfig exists but cannot be loaded
  *
  * @sideeffects Reads the tsconfig and the source files from disk
  * @systemlayer Data Layer
@@ -78,11 +79,18 @@ function listTypeScriptFiles(config: GuardianConfig): string[] {
  * @tags ts-morph, tsconfig, path-aliases, compiler-defaults, project-loading
  */
 function loadProject(config: GuardianConfig, files: string[]): Project {
-  const project = new Project({
-    ...(config.tsconfig.kind === 'file' ? { tsConfigFilePath: config.tsconfig.path } : {}),
-    skipAddingFilesFromTsConfig: true,
-    skipFileDependencyResolution: true,
-  });
+  const shared = { skipAddingFilesFromTsConfig: true, skipFileDependencyResolution: true };
+  let project: Project;
+  if (config.tsconfig.kind === 'file') {
+    try {
+      project = new Project({ tsConfigFilePath: config.tsconfig.path, ...shared });
+    } catch (err) {
+      const shown = path.relative(config.projectRoot, config.tsconfig.path).split(path.sep).join('/');
+      throw new Error(`could not load tsconfig "${shown}": ${err instanceof Error ? err.message : String(err)}`);
+    }
+  } else {
+    project = new Project(shared);
+  }
 
   for (const file of files) {
     project.addSourceFileAtPathIfExists(file);

@@ -6,12 +6,9 @@
  *   npm run build-index                    # Full rebuild with embeddings
  */
 import path from 'path';
-import { openDatabase, clearAllData } from './db.js';
-import { buildIndex, clearDirtyFiles } from './indexer.js';
-import { buildCallGraph } from './call-graph.js';
-import { buildPythonCallGraph } from './py-call-graph.js';
-import { invalidateCache } from './embeddings.js';
-import { clearValidationArtifacts } from './validation-artifacts.js';
+import { openDatabase } from './db.js';
+import { clearDirtyFiles } from './indexer.js';
+import { runRebuild, formatRebuildReport } from './rebuild.js';
 import { resolveConfig, ensureDirectories, registerProject } from '../config.js';
 
 const config = resolveConfig();
@@ -22,6 +19,18 @@ const REPO_ROOT = config.projectRoot;
 const DB_PATH = config.databasePath;
 const DIRTY_FILES_PATH = path.resolve(path.dirname(config.databasePath), '.dirty-files');
 
+/**
+ * @what Runs a full index rebuild from the command line and prints the rebuild report
+ * @how Opens the project's index database, runs the shared rebuild pipeline (runRebuild), prints the per-phase report and the elapsed time, and sets a non-zero exit code when any phase failed. A degraded phase is reported but does not fail the command.
+ * @why The CLI and the rebuild_index MCP tool must run the same phases and report them the same way; this used to be a second copy of the sequence
+ *
+ * @returns {Promise<void>} Resolves when the report has been printed
+ *
+ * @sideeffects Rewrites the project's index database; clears .dirty-files and the validation cache; prints to stdout; sets process.exitCode
+ * @systemlayer CLI
+ * @domain rebuild, code-index
+ * @tags cli, rebuild, build-index, exit-code, reporting
+ */
 async function main(): Promise<void> {
   console.log(`=== Codebase Guardian Index Builder (${config.projectName}) ===`);
   console.log(`Repository: ${REPO_ROOT}`);
@@ -29,64 +38,25 @@ async function main(): Promise<void> {
   console.log('');
 
   const db = openDatabase(DB_PATH);
-
-  // Full rebuild: clear existing data
-  console.log('Clearing existing index data...');
-  clearAllData(db);
-
-  // Phase 1: Index code files (Tier 1) and docs (Tier 3)
-  console.log('Phase 1: Scanning code and documentation...');
   const startTime = Date.now();
-  const indexStats = await buildIndex(db, REPO_ROOT);
 
-  console.log(`  Files scanned: ${indexStats.filesScanned}`);
-  console.log(`  Tier 1 (JSDoc): ${indexStats.tier1Added}`);
-  console.log(`  Tier 3 (docs): ${indexStats.tier3Added}`);
-  console.log(`  Inline comments: ${indexStats.commentsExtracted}`);
-  console.log(`  Doc sections: ${indexStats.docSectionsCreated}`);
-  console.log(`  Embeddings: ${indexStats.embeddingsGenerated}`);
-  console.log(`  Time: ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
-  console.log('');
-
-  // Phase 2: Build call graph and discover Tier 2 exports
-  console.log('Phase 2: Building call graph...');
-  const graphStart = Date.now();
-  const graphStats = await buildCallGraph(db, REPO_ROOT);
-
-  console.log(`  Tier 2 (exports): ${graphStats.exportsDiscovered}`);
-  console.log(`  Call edges: ${graphStats.edgesCreated}`);
-  console.log(`  Time: ${((Date.now() - graphStart) / 1000).toFixed(1)}s`);
-  console.log('');
-
-  // Phase 2b: Build Python call graph (cross-file edges resolved against P3.3's functions rows)
-  console.log('Phase 2b: Building Python call graph...');
-  const pyGraphStart = Date.now();
-  const pyGraphStats = await buildPythonCallGraph(db, REPO_ROOT);
-
-  console.log(`  Python call edges: ${pyGraphStats.edgesCreated}`);
-  console.log(`  Time: ${((Date.now() - pyGraphStart) / 1000).toFixed(1)}s`);
-  console.log('');
-
-  // Clear dirty files
+  const result = await runRebuild(db, config);
   clearDirtyFiles(DIRTY_FILES_PATH);
-  invalidateCache();
 
-  // Bust the hook's validation cache + session store — their verdicts were
-  // computed against the pre-rebuild index and would otherwise serve stale
-  // false positives (e.g. a phantom DRY duplicate from the old snapshot).
-  const clearedArtifacts = clearValidationArtifacts(DB_PATH);
-  if (clearedArtifacts.length > 0) {
-    console.log(`Cleared stale validation artifacts: ${clearedArtifacts.join(', ')}`);
-  }
-
-  const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
-  console.log(`=== Build complete in ${totalTime}s ===`);
-  console.log(`Total indexed: ${indexStats.tier1Added + graphStats.exportsDiscovered + indexStats.tier3Added} entries`);
+  console.log(formatRebuildReport(result).join('\n'));
+  console.log('');
+  console.log(`=== Finished in ${((Date.now() - startTime) / 1000).toFixed(1)}s ===`);
 
   db.close();
+
+  // Set the exit code and return; do not call process.exit(), which can abort the embedding
+  // runtime's native threads mid-teardown.
+  if (result.phases.some(p => p.status === 'failed')) {
+    process.exitCode = 1;
+  }
 }
 
 main().catch((error) => {
   console.error('Build failed:', error);
-  process.exit(1);
+  process.exitCode = 1;
 });

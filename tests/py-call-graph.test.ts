@@ -72,22 +72,23 @@ describe('buildPythonCallGraph', () => {
   });
 
   it('fails open (returns {edgesCreated: 0}, does not throw) for a nonexistent root', async () => {
-    let stats: { edgesCreated: number } | undefined;
+    let stats: { edgesCreated: number; note: string | null } | undefined;
     await assert.doesNotReject(async () => {
       stats = await buildPythonCallGraph(db, '/nonexistent/path/does-not-exist-guardian-test');
     });
-    assert.deepEqual(stats, { edgesCreated: 0 });
+    assert.equal(stats?.edgesCreated, 0);
   });
 
   it('fails open (returns {edgesCreated: 0}, does not throw) when the pyenv interpreter is missing', async () => {
     const originalGuardianHome = process.env.GUARDIAN_HOME;
     process.env.GUARDIAN_HOME = path.join(__dirname, 'fixtures', 'does-not-exist-guardian-home');
     try {
-      let stats: { edgesCreated: number } | undefined;
+      let stats: { edgesCreated: number; note: string | null } | undefined;
       await assert.doesNotReject(async () => {
         stats = await buildPythonCallGraph(db, FIXTURE_DIR);
       });
-      assert.deepEqual(stats, { edgesCreated: 0 });
+      // The note is what lets the rebuild report say the Python call graph did not run.
+      assert.deepEqual(stats, { edgesCreated: 0, note: 'Python interpreter not found' });
     } finally {
       if (originalGuardianHome === undefined) {
         delete process.env.GUARDIAN_HOME;

@@ -50,7 +50,8 @@ interface PyCallGraphPayload {
  *   callee_file/callee_def_line, falling back to callee_name) via getFunctionByFileAndLine first and
  *   getFunctionByName as a fallback. When both resolve, inserts a 'calls' call_edges row. Any failure
  *   (missing interpreter, subprocess error, non-zero/malformed output, JSON parse failure, or a
- *   guardian_py-reported error) returns {edgesCreated: 0} instead of throwing.
+ *   guardian_py-reported error) returns {edgesCreated: 0, note: <reason>} instead of throwing; the note
+ *   lets the rebuild report say the Python call graph did not run. A normal run returns note: null.
  * @why Makes callers/callees/impact and the validator's caller-context work for Python by populating the
  *   same call_edges table buildCallGraph populates for TypeScript
  *
@@ -58,7 +59,8 @@ interface PyCallGraphPayload {
  * @param {string} repoRoot Absolute path to the repository root (the package root guardian_py walks)
  * @param {{timeoutMs?: number}} [opts] Optional subprocess timeout override (default 60000ms — a
  *   repo-wide Jedi walk is much slower than the single-file extract call in py-index.ts)
- * @returns {Promise<{edgesCreated: number}>} Count of call_edges rows inserted (0 on any failure — fail-open)
+ * @returns {Promise<{edgesCreated: number, note: string | null}>} Count of call_edges rows inserted (0 on any
+ *   failure — fail-open), plus the reason nothing was built when a fail-open path was taken (null on a normal run)
  *
  * @sideeffects Spawns a Python subprocess via execFileSync; writes rows to the call_edges table
  * @systemlayer External Integration
@@ -69,7 +71,7 @@ export async function buildPythonCallGraph(
   db: Database.Database,
   repoRoot: string,
   opts?: { timeoutMs?: number }
-): Promise<{ edgesCreated: number }> {
+): Promise<{ edgesCreated: number; note: string | null }> {
   const guardianHome = getGuardianHome();
   const pyBin = path.join(guardianHome, 'pyenv', 'bin', 'python');
   // Same resolution as py-index.ts's extractPythonFile: the guardian_py helper source ships
@@ -78,7 +80,7 @@ export async function buildPythonCallGraph(
 
   if (!existsSync(pyBin)) {
     console.error('  Python interpreter not found, skipping Python call graph');
-    return { edgesCreated: 0 };
+    return { edgesCreated: 0, note: 'Python interpreter not found' };
   }
 
   let stdout: string;
@@ -90,8 +92,9 @@ export async function buildPythonCallGraph(
       env: { ...process.env, PYTHONPATH: pyPath },
     });
   } catch (err) {
-    console.error(`  Python call graph subprocess failed, skipping: ${err instanceof Error ? err.message : String(err)}`);
-    return { edgesCreated: 0 };
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`  Python call graph subprocess failed, skipping: ${message}`);
+    return { edgesCreated: 0, note: `Python call graph subprocess failed: ${message}` };
   }
 
   let payload: PyCallGraphPayload;
@@ -99,12 +102,12 @@ export async function buildPythonCallGraph(
     payload = JSON.parse(stdout);
   } catch {
     console.error('  Python call graph produced non-JSON output, skipping');
-    return { edgesCreated: 0 };
+    return { edgesCreated: 0, note: 'Python call graph produced non-JSON output' };
   }
 
   if (payload.error) {
     console.error(`  Python call graph reported an error, skipping: ${payload.error}`);
-    return { edgesCreated: 0 };
+    return { edgesCreated: 0, note: `Python call graph reported an error: ${payload.error}` };
   }
 
   const edges = payload.edges ?? [];
@@ -138,5 +141,5 @@ export async function buildPythonCallGraph(
   }
 
   console.error(`  Inserted ${edgesCreated} Python call edges`);
-  return { edgesCreated };
+  return { edgesCreated, note: null };
 }

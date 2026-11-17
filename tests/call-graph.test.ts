@@ -84,6 +84,22 @@ describe('buildCallGraph with a tsconfig outside the git root', () => {
     db.close();
   });
 
+  it('names the tsconfig in the error when it cannot be parsed', async () => {
+    const root = makeTsSubdirRepo({
+      ...configFile({ sourceDirectories: ['web/app'], tsconfig: 'web/tsconfig.json' }),
+      'web/tsconfig.json': '{ not json',
+    });
+    const config = reloadConfig(root);
+    const db = openDatabase(':memory:');
+    await buildIndex(db, root, { config });
+
+    await assert.rejects(
+      () => buildCallGraph(db, root, { config }),
+      /^Error: could not load tsconfig "web\/tsconfig\.json": .+/,
+    );
+    db.close();
+  });
+
   it('still uses a root tsconfig.json when the field is not set', async () => {
     const root = makeTsSubdirRepo({
       ...configFile({ sourceDirectories: ['web/app'] }),
