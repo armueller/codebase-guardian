@@ -6,10 +6,9 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import path from 'path';
-import { resolveConfig, ensureDirectories, registerProject } from '../config.js';
+import { resolveConfig, reloadConfig, ensureDirectories, registerProject } from '../config.js';
 import {
   openDatabase,
-  clearAllData,
   searchByFTS,
   searchCommentsByFTS,
   searchDocSectionsByFTS,
@@ -25,10 +24,8 @@ import {
   type SearchFilters,
 } from './db.js';
 import { semanticSearch, invalidateCache } from './embeddings.js';
-import { clearValidationArtifacts } from './validation-artifacts.js';
 import { buildIndex, readDirtyFiles, clearDirtyFiles } from './indexer.js';
-import { buildCallGraph } from './call-graph.js';
-import { buildPythonCallGraph } from './py-call-graph.js';
+import { runRebuild, formatRebuildReport } from './rebuild.js';
 import { createIndexAPI } from '../shared/index-api.js';
 import { countChangesSinceBuild } from '../shared/index-staleness.js';
 import { executeInSandbox } from './execute-sandbox.js';
@@ -43,6 +40,10 @@ const PKG_VERSION: string = _require('../../package.json').version ?? '0.0.0';
 
 // ─── Path Resolution ────────────────────────────────────────────────────────
 
+// Startup snapshot. Only what cannot change for a running server is taken from it: the project
+// root, and the database and log paths derived from the root. Settings that come from
+// guardian.config.json or from auto-detection (source/docs directories, tsconfig, excludes) go
+// stale in a long-lived process, so handlers read them with reloadConfig(REPO_ROOT) instead.
 const config = resolveConfig();
 ensureDirectories(config);
 registerProject(config);
@@ -209,6 +210,19 @@ const TOOL_DEFINITIONS = [
 
 // ─── Auto-sync ──────────────────────────────────────────────────────────────
 
+/**
+ * @what Re-indexes the files listed in .dirty-files before a search, if there are any
+ * @how Reads the dirty-file list; when it is non-empty, runs an incremental buildIndex over those files with the project config re-read from disk, then clears the list and the embedding cache
+ * @why Lets searches see edits made since the last rebuild without a full rebuild. The config is reloaded because this server outlives changes to guardian.config.json.
+ *
+ * @param {ReturnType<typeof openDatabase>} db Open index database
+ * @returns {Promise<void>} Resolves once the dirty files are indexed (immediately when there are none)
+ *
+ * @sideeffects Reads .dirty-files and guardian.config.json; rewrites index rows for the dirty files; clears .dirty-files; invalidates the embedding cache; logs to stderr
+ * @systemlayer Data Layer
+ * @domain code-index, mcp-server
+ * @tags auto-sync, incremental, dirty-files, indexing, config-reload
+ */
 async function autoSync(db: ReturnType<typeof openDatabase>): Promise<void> {
   const dirtyFiles = readDirtyFiles(DIRTY_FILES_PATH);
   if (dirtyFiles.length === 0) return;
@@ -218,6 +232,7 @@ async function autoSync(db: ReturnType<typeof openDatabase>): Promise<void> {
   await buildIndex(db, REPO_ROOT, {
     incremental: true,
     dirtyFiles: absoluteFiles,
+    config: reloadConfig(REPO_ROOT),
   });
   clearDirtyFiles(DIRTY_FILES_PATH);
   invalidateCache();
@@ -459,40 +474,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'rebuild_index': {
         console.error('Starting full index rebuild...');
 
-        // Clear all existing data to prevent stale Tier 2 entries and call edges
-        clearAllData(db);
-
-        const indexStats = await buildIndex(db, REPO_ROOT);
-        console.error('Building call graph...');
-        const graphStats = await buildCallGraph(db, REPO_ROOT);
-        console.error('Building Python call graph...');
-        const pyGraphStats = await buildPythonCallGraph(db, REPO_ROOT);
-        invalidateCache();
-
-        // Bust the hook's validation cache + session store so stale verdicts
-        // from the pre-rebuild index (e.g. a phantom DRY duplicate) aren't
-        // re-served after the rebuild that was meant to fix them.
-        const clearedArtifacts = clearValidationArtifacts(DB_PATH);
+        // Re-read the project config from disk: this process may have started before
+        // guardian.config.json (or a docs folder) existed, and must not rebuild with the
+        // settings it saw at startup. The phases themselves live in rebuild.ts (shared with
+        // the build-index CLI); each reports its own status, so one failing does not abort
+        // the others.
+        const result = await runRebuild(db, reloadConfig(REPO_ROOT));
 
         return {
-          content: [{
-            type: 'text',
-            text: [
-              '## Index Rebuild Complete',
-              '',
-              `**Files scanned:** ${indexStats.filesScanned}`,
-              `**Files skipped (unchanged):** ${indexStats.filesSkipped}`,
-              `**Tier 1 (JSDoc):** ${indexStats.tier1Added}`,
-              `**Tier 2 (exports):** ${graphStats.exportsDiscovered}`,
-              `**Tier 3 (docs):** ${indexStats.tier3Added}`,
-              `**Embeddings generated:** ${indexStats.embeddingsGenerated}`,
-              `**Call edges:** ${graphStats.edgesCreated}`,
-              `**Python call edges:** ${pyGraphStats.edgesCreated}`,
-              `**Inline comments:** ${indexStats.commentsExtracted}`,
-              `**Doc sections:** ${indexStats.docSectionsCreated}`,
-              `**Validation cache:** ${clearedArtifacts.length > 0 ? `cleared (${clearedArtifacts.join(', ')})` : 'already clear'}`,
-            ].join('\n'),
-          }],
+          content: [{ type: 'text', text: formatRebuildReport(result).join('\n') }],
+          // An error only when the index itself is not trustworthy. A degraded or failed
+          // call graph is a problem stated in a usable result.
+          isError: result.indexingFailed,
         };
       }
 
@@ -554,10 +547,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'index_status': {
         // Git-based, the same count the search hint uses (nothing writes .dirty-files).
-        const changedSinceBuild = countChangesSinceBuild(config.projectRoot, config.databasePath, {
-          extensions: config.fileExtensions,
-          sourceDirectories: config.sourceDirectories,
-          docsDirectories: config.docsDirectories,
+        // Config is re-read so the count follows the current source and docs directories.
+        const current = reloadConfig(REPO_ROOT);
+        const changedSinceBuild = countChangesSinceBuild(REPO_ROOT, DB_PATH, {
+          extensions: current.fileExtensions,
+          sourceDirectories: current.sourceDirectories,
+          docsDirectories: current.docsDirectories,
         }, 5000);
         const meta = getIndexMetadata(db, changedSinceBuild);
 
