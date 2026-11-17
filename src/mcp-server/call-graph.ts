@@ -7,7 +7,8 @@ import {
   getFunctionByName,
 } from './db.js';
 import { generateEmbeddings } from './embeddings.js';
-import { resolveConfig } from '../config.js';
+import { resolveConfig, type GuardianConfig } from '../config.js';
+import { listIndexFiles } from './file-walk.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -27,25 +28,64 @@ interface CallEdgeRaw {
   edgeType: 'calls' | 'imports';
 }
 
+/**
+ * @what Outcome of the TypeScript call-graph phase
+ * @domain call-graph, rebuild
+ * @tags call-graph, tier-2, phase-status, degraded
+ */
+export interface CallGraphResult {
+  /** Tier 2 rows inserted (exports not already indexed as Tier 1) */
+  exportsDiscovered: number;
+  /** call_edges rows inserted */
+  edgesCreated: number;
+  /** `degraded` when the graph was built without a tsconfig, so alias calls are matched by name only */
+  status: 'ok' | 'degraded';
+  /** Why the status is degraded, or why nothing was built; null otherwise */
+  note: string | null;
+}
+
 // ─── Project Loading ────────────────────────────────────────────────────────
 
-function loadProject(repoRoot: string): Project {
-  const tsConfigPath = path.join(repoRoot, 'tsconfig.json');
+/**
+ * @what Lists the TypeScript files of a project that belong in the call graph
+ * @how Takes the code files from listIndexFiles(config) and keeps .ts and .tsx
+ * @why The call graph must read exactly the files the indexer read. Globbing the source directories separately loaded node_modules and build output that the indexer skips, and ignored excludeDirectories.
+ *
+ * @param {GuardianConfig} config Resolved project config
+ * @returns {string[]} Absolute paths of the TypeScript files in the index
+ *
+ * @sideeffects Reads the filesystem (directory walk)
+ * @systemlayer Data Layer
+ * @domain call-graph, file-walk
+ * @tags typescript, source-files, exclude-directories, file-list
+ */
+function listTypeScriptFiles(config: GuardianConfig): string[] {
+  return listIndexFiles(config).codeFiles.filter(file => file.endsWith('.ts') || file.endsWith('.tsx'));
+}
 
+/**
+ * @what Creates the ts-morph project the call graph is extracted from
+ * @how Uses the resolved tsconfig's compiler options when there is one (so path aliases resolve) and compiler defaults when there is none, then adds each listed file by exact path. Files are added one by one, not by glob, because route files are often named with glob characters such as [id].ts.
+ * @why The tsconfig may sit in a sub-folder or be absent; hard-coding <root>/tsconfig.json made ts-morph throw and aborted the whole rebuild
+ *
+ * @param {GuardianConfig} config Resolved project config; config.tsconfig must not be `invalid` (the caller rejects that first)
+ * @param {string[]} files Absolute paths of the TypeScript files to load
+ * @returns {Project} A project holding exactly those files
+ *
+ * @sideeffects Reads the tsconfig and the source files from disk
+ * @systemlayer Data Layer
+ * @domain call-graph
+ * @tags ts-morph, tsconfig, path-aliases, compiler-defaults, project-loading
+ */
+function loadProject(config: GuardianConfig, files: string[]): Project {
   const project = new Project({
-    tsConfigFilePath: tsConfigPath,
+    ...(config.tsconfig.kind === 'file' ? { tsConfigFilePath: config.tsconfig.path } : {}),
     skipAddingFilesFromTsConfig: true,
     skipFileDependencyResolution: true,
   });
 
-  // Add source files from configured source directories
-  const config = resolveConfig(repoRoot);
-  for (const dir of config.sourceDirectories) {
-    const absDir = path.join(repoRoot, dir);
-    project.addSourceFilesAtPaths([
-      `${absDir}/**/*.ts`,
-      `${absDir}/**/*.tsx`,
-    ]);
+  for (const file of files) {
+    project.addSourceFileAtPathIfExists(file);
   }
 
   return project;
@@ -247,15 +287,43 @@ function findEnclosingFunction(node: Node): { name: string; filePath: string } |
 
 // ─── Build Call Graph ───────────────────────────────────────────────────────
 
+/**
+ * @what Builds the TypeScript half of the index's call graph: Tier 2 rows for undocumented exports, and call edges
+ * @how Rejects an invalid tsconfig outright, returns early when the index holds no TypeScript files, otherwise loads the indexed files into a ts-morph project (with the resolved tsconfig, or compiler defaults when there is none), inserts each exported function not already indexed as Tier 2 with an embedding, then resolves every call and JSX usage to an indexed function and inserts the edge. Built without a tsconfig, the result is marked degraded: calls through path aliases do not resolve to a file and are matched by function name alone.
+ * @why Phase 2 of the rebuild. callers/callees/impact and the hook's caller context read these rows.
+ *
+ * @param {Database.Database} db Open index database, already populated by buildIndex
+ * @param {string} repoRoot Absolute project root; stored file paths are relative to it
+ * @param {{config?: GuardianConfig}} [opts] An already-resolved (fresh) project config, defaulting to resolveConfig(repoRoot)
+ * @returns {Promise<CallGraphResult>} Counts plus a status and note for the rebuild report
+ * @throws {Error} When the configured tsconfig is invalid (the reason is the message); there is no fallback to another file
+ *
+ * @sideeffects Reads the tsconfig and source files; inserts functions, embeddings and call_edges rows; loads the embedding model; logs progress to stderr
+ * @systemlayer Data Layer
+ * @domain call-graph, code-index
+ * @tags call-graph, tier-2, ts-morph, tsconfig, exports, call-edges, rebuild
+ */
 export async function buildCallGraph(
   db: Database.Database,
   repoRoot: string,
-): Promise<{ exportsDiscovered: number; edgesCreated: number }> {
+  opts?: { config?: GuardianConfig },
+): Promise<CallGraphResult> {
   let exportsDiscovered = 0;
   let edgesCreated = 0;
 
+  const config = opts?.config ?? resolveConfig(repoRoot);
+  if (config.tsconfig.kind === 'invalid') {
+    throw new Error(config.tsconfig.reason);
+  }
+
+  const files = listTypeScriptFiles(config);
+  if (files.length === 0) {
+    console.error('  No TypeScript files in the source directories, skipping TypeScript call graph');
+    return { exportsDiscovered, edgesCreated, status: 'ok', note: 'no TypeScript files in the source directories' };
+  }
+
   console.error('  Loading TypeScript project...');
-  const project = loadProject(repoRoot);
+  const project = loadProject(config, files);
   console.error(`  Loaded ${project.getSourceFiles().length} source files`);
 
   // Discover Tier 2 exports
@@ -310,5 +378,14 @@ export async function buildCallGraph(
 
   console.error(`  Inserted ${edgesCreated} call edges`);
 
-  return { exportsDiscovered, edgesCreated };
+  if (config.tsconfig.kind === 'none') {
+    const note =
+      `no tsconfig found at ${path.join(config.projectRoot, 'tsconfig.json')} and none configured; ` +
+      'built with compiler defaults, so calls through path aliases are matched by name only. ' +
+      'Set "tsconfig" in guardian.config.json.';
+    console.error(`  WARNING: ${note}`);
+    return { exportsDiscovered, edgesCreated, status: 'degraded', note };
+  }
+
+  return { exportsDiscovered, edgesCreated, status: 'ok', note: null };
 }
