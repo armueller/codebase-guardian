@@ -38,7 +38,7 @@ export interface CallGraphResult {
   exportsDiscovered: number;
   /** call_edges rows inserted */
   edgesCreated: number;
-  /** `degraded` when the graph was built without a tsconfig, so alias calls are matched by name only */
+  /** `degraded` when the graph was built without a tsconfig, so calls through path aliases have no edge */
   status: 'ok' | 'degraded';
   /** Why the status is degraded, or why nothing was built; null otherwise */
   note: string | null;
@@ -297,7 +297,7 @@ function findEnclosingFunction(node: Node): { name: string; filePath: string } |
 
 /**
  * @what Builds the TypeScript half of the index's call graph: Tier 2 rows for undocumented exports, and call edges
- * @how Rejects an invalid tsconfig outright, returns early when the index holds no TypeScript files, otherwise loads the indexed files into a ts-morph project (with the resolved tsconfig, or compiler defaults when there is none), inserts each exported function not already indexed as Tier 2 with an embedding, then resolves every call and JSX usage to an indexed function and inserts the edge. Built without a tsconfig, the result is marked degraded: calls through path aliases do not resolve to a file and are matched by function name alone.
+ * @how Rejects an invalid tsconfig outright, returns early when the index holds no TypeScript files, otherwise loads the indexed files into a ts-morph project (with the resolved tsconfig, or compiler defaults when there is none), inserts each exported function not already indexed as Tier 2 with an embedding, then resolves every call and JSX usage to an indexed function and inserts the edge. Built without a tsconfig, the result is marked degraded: imports through path aliases cannot be resolved, so calls to those functions get no edge.
  * @why Phase 2 of the rebuild. callers/callees/impact and the hook's caller context read these rows.
  *
  * @param {Database.Database} db Open index database, already populated by buildIndex
@@ -387,9 +387,12 @@ export async function buildCallGraph(
   console.error(`  Inserted ${edgesCreated} call edges`);
 
   if (config.tsconfig.kind === 'none') {
+    // Without the tsconfig's `paths`, an alias import cannot be resolved. Its definition then
+    // comes back as the import specifier in the calling file, so the callee lookup finds no row
+    // and no edge is created. The edges are missing, not guessed from the function name.
     const note =
       `no tsconfig found at ${path.join(config.projectRoot, 'tsconfig.json')} and none configured; ` +
-      'built with compiler defaults, so calls through path aliases are matched by name only. ' +
+      'built with compiler defaults, so calls through path aliases are not linked (those call edges are missing). ' +
       'Set "tsconfig" in guardian.config.json.';
     console.error(`  WARNING: ${note}`);
     return { exportsDiscovered, edgesCreated, status: 'degraded', note };

@@ -48,6 +48,8 @@ src/
 ├── mcp-server/             # MCP server (ESM, runs via node)
 │   ├── index.ts            # Tool handlers + server setup
 │   ├── db.ts               # SQLite schema + CRUD (better-sqlite3)
+│   ├── rebuild.ts           # The full rebuild as isolated phases (used by rebuild_index and the CLI); per-phase status + report
+│   ├── file-walk.ts         # The one file list both rebuild phases read; applies excludeDirectories
 │   ├── indexer.ts           # Phase 1: JSDoc & doc parsing + Python module/unit indexing
 │   ├── ts-bodies.ts         # TypeScript-parser body ranges (inline comments + body embeddings); text brace scan is only the fallback
 │   ├── call-graph.ts        # Phase 2: TS call graph + export discovery (ts-morph)

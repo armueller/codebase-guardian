@@ -138,7 +138,7 @@ Full or incremental rebuild of the code index.
 |-----------|------|----------|-------------|
 | `skip_embeddings` | boolean | No | Skip HuggingFace embedding generation (default false) |
 
-**Output:** Build statistics including counts for each tier, comments, doc sections, embeddings, and call edges.
+**Output:** One status line per phase (`ok`, `degraded`, `failed` or `skipped`, with the reason), then build statistics including counts for each tier, comments, doc sections, embeddings, and call edges. A count reads `not run` when its phase did not complete. The project config is re-read from disk on every call.
 
 **When to use:** After significant codebase changes, or when search results seem stale. Note: this clears all existing data before rebuilding.
 

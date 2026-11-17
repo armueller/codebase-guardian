@@ -65,7 +65,7 @@ Resolution, in order:
 | not set, no root tsconfig, TypeScript files present | built with compiler defaults | degraded: no tsconfig found, path aliases are not resolved; set `"tsconfig"` |
 | no TypeScript files in the source directories | nothing to build | ok, noted as "no TypeScript files" |
 
-Compiler defaults still yield export discovery, and calls through relative imports still resolve to their file. Calls through a path alias do not: on the reporting project 635 of 877 calls resolve to a file, and none of the 267 calls through the `~/` alias do. Those calls are not dropped. The existing fallback matches them by function name alone (`getFunctionByName` with no file), which is right when the name is unique in the index and picks an arbitrary row when two functions share it. That ambiguity is why the case is reported as degraded and not ok. (Corrected 2026-11-16: an earlier draft said the alias edges were lost.)
+Compiler defaults still yield export discovery, and calls through relative imports still resolve to their file. Calls through a path alias do not, and they get no call edge. An unresolvable alias import comes back from the compiler as its own import specifier in the calling file, so the callee lookup is made against the calling file and finds nothing. Measured on the reporting project with the built CLI: 108 call edges with `"tsconfig": "web/tsconfig.json"`, 65 without, and none of the route-to-`lib` calls (all alias imports) keep an edge. That loss is why the case is reported as degraded and not ok. (Corrected twice on 2026-11-16: the first draft said these edges were lost, which was right; a later edit claimed they were matched by function name, which was an inference from reading the code and was disproved by the measurement above.)
 
 Source-directory auto-detection (`detectSourceDirectories`) reads the same resolved tsconfig and treats its `include` entries as relative to that file's folder, so there is one notion of "the project's tsconfig". It only runs when `sourceDirectories` is not set.
 
@@ -108,7 +108,7 @@ No test covers `call-graph.ts` today. New fixture repos under `tests/fixtures/`:
 
 - root tsconfig (regression: output unchanged);
 - sub-folder tsconfig with a path alias and the field set: Tier 2 rows exist and a call through the alias produces an edge to the right file;
-- same repo without the field: degraded status, relative-import edge present (the alias call is matched by name only, so its target is not asserted);
+- same repo without the field: degraded status, relative-import edge present, no edge for the alias call (to either same-named function);
 - field pointing at a missing file: TypeScript phase failed, Python call graph and cache clear still ran;
 - a source directory containing `node_modules`, `build` and a path-style exclude: none of them reach either phase.
 

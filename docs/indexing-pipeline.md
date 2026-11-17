@@ -107,7 +107,7 @@ Splits Tier 3 documentation into heading-level sections for granular FTS5 search
 
 Uses `ts-morph` to load the TypeScript project and discover all exported symbols not already captured as Tier 1:
 
-1. Load `tsconfig.json` and add all `app/**/*.ts(x)` files
+1. Load the resolved tsconfig (the `tsconfig` path from `guardian.config.json`, else `<root>/tsconfig.json`, else compiler defaults) and add the `.ts`/`.tsx` files the indexer walked — the same file list, with `excludeDirectories` applied
 2. For each source file, find exported declarations:
    - Functions (`export function`)
    - Variables (`export const`)

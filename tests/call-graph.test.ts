@@ -60,10 +60,14 @@ describe('buildCallGraph with a tsconfig outside the git root', () => {
     const { db, result } = await build(root);
 
     assert.equal(result.status, 'degraded');
-    assert.match(result.note ?? '', /matched by name only/);
+    assert.match(result.note ?? '', /calls through path aliases are not linked/);
     assert.match(result.note ?? '', /Set "tsconfig" in guardian\.config\.json/);
     assert.equal(result.exportsDiscovered, 4);
     assert.equal(hasEdge(db, RUN, SHOUT), true, 'relative imports still resolve to their file');
+    // An unresolvable alias import resolves to its own import specifier, in the calling file, so
+    // the callee lookup finds nothing: the edge is missing, not guessed from the name.
+    assert.equal(hasEdge(db, RUN, GREET_LIB), false, 'the alias call has no edge without a tsconfig');
+    assert.equal(hasEdge(db, RUN, GREET_OTHER), false, 'and is not linked to a same-named function either');
     db.close();
   });
 
