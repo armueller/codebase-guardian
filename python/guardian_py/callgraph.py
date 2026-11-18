@@ -29,14 +29,15 @@ import ast
 import os
 
 # Directories that are never worth walking for call-site extraction: virtual
-# envs, caches, and build output. Same rationale as the Node-side indexer's
-# skip list, kept here so guardian_py doesn't have to trust the caller to
-# have already filtered the tree.
-EXCLUDED_DIRS = {
-    # Mirror src/mcp-server/indexer.ts WALK_EXCLUDE_DIRS exactly. callgraph walks
-    # from the repo root, so omitting node_modules et al. means Jedi traverses the
-    # whole dependency tree (stray .py files included) and blows the subprocess
-    # timeout — dropping ALL edges. Keep these two lists in sync.
+# envs, caches, and build output. This is only the fallback for a caller that
+# passes no exclude list (for example running the CLI by hand). The Node side
+# always passes the project's effective list (`excludeDirectories` from
+# guardian.config.json merged into DEFAULT_EXCLUDE in src/config.ts), so that
+# file is the single source of truth; keep this copy equal to DEFAULT_EXCLUDE.
+# Omitting node_modules et al. means Jedi traverses the whole dependency tree
+# (stray .py files included) and blows the subprocess timeout — dropping ALL
+# edges.
+EXCLUDED_DIRS = (
     "node_modules",
     "dist",
     ".claude",
@@ -52,16 +53,22 @@ EXCLUDED_DIRS = {
     "site-packages",
     ".mypy_cache",
     ".ruff_cache",
-}
+)
 
 
-def build_callgraph(package_root: str) -> dict:
+def build_callgraph(package_root: str, exclude: list[str] | None = None) -> dict:
     """Walk `package_root` and return the callgraph JSON contract dict.
 
     Always returns a dict with `language`/`root`/`edges` (and `error` on
     failure) — never raises. `root` echoes the caller's argument verbatim
     (matching `extract`'s `file` field), while file discovery and Jedi
     resolution both operate on the absolute path internally.
+
+    Args:
+        package_root: Folder to walk.
+        exclude: Folders to leave out, in the two forms guardian.config.json
+            accepts (see `_is_excluded`). When given it is the whole list;
+            when omitted, `EXCLUDED_DIRS` is used.
     """
     try:
         import jedi  # local import: keep `jedi` optional for callers that
@@ -72,7 +79,7 @@ def build_callgraph(package_root: str) -> dict:
     root_abs = os.path.abspath(package_root)
 
     try:
-        files = _find_py_files(root_abs)
+        files = _find_py_files(root_abs, list(EXCLUDED_DIRS) if exclude is None else exclude)
     except Exception as exc:
         return {"language": "py", "root": package_root, "error": f"walk_failed: {exc}", "edges": []}
 
@@ -132,8 +139,41 @@ def build_callgraph(package_root: str) -> dict:
     return {"language": "py", "root": package_root, "edges": edges}
 
 
-def _find_py_files(root: str) -> list[str]:
-    """Recursively list `.py` files under `root`, skipping EXCLUDED_DIRS.
+def _is_excluded(rel_dir: str, exclude: list[str]) -> bool:
+    """Report whether a folder is left out of the walk.
+
+    Same rule as `isExcludedDir` in src/mcp-server/file-walk.ts, so the Python
+    and TypeScript sides agree on which folders are in the index: an entry
+    with no slash is a bare name and matches a folder of that name at any
+    depth; an entry with a slash (decided before a leading "./" or "/" is
+    stripped) is a path from the root and matches only that folder.
+
+    Args:
+        rel_dir: Folder path relative to the walked root, "/"-separated.
+        exclude: The exclude entries.
+
+    Returns:
+        True when the folder should not be walked.
+    """
+    name = rel_dir.rsplit("/", 1)[-1]
+    for raw in exclude:
+        normalized = raw.replace("\\", "/").rstrip("/")
+        is_path = "/" in normalized
+        entry = normalized
+        while entry.startswith("./") or entry.startswith("/"):
+            entry = entry[2:] if entry.startswith("./") else entry[1:]
+        if entry in ("", "."):
+            continue
+        if is_path:
+            if entry == rel_dir:
+                return True
+        elif entry == name:
+            return True
+    return False
+
+
+def _find_py_files(root: str, exclude: list[str]) -> list[str]:
+    """Recursively list `.py` files under `root`, skipping excluded folders.
 
     `os.walk` on a nonexistent path yields nothing (no exception), so a
     missing package root naturally produces an empty file list rather than
@@ -141,7 +181,9 @@ def _find_py_files(root: str) -> list[str]:
     """
     found: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in EXCLUDED_DIRS]
+        rel_parent = os.path.relpath(dirpath, root).replace(os.sep, "/")
+        prefix = "" if rel_parent == "." else rel_parent + "/"
+        dirnames[:] = [d for d in dirnames if not _is_excluded(prefix + d, exclude)]
         for filename in filenames:
             if filename.endswith(".py"):
                 found.append(os.path.join(dirpath, filename))
@@ -198,6 +240,9 @@ def _is_within(path: str, root: str) -> bool:
 class _CallCollector(ast.NodeVisitor):
     """Walks a module's AST, recording each call site's enclosing def + callee position.
 
+    Domain: code-index, python-support
+    Tags: callgraph, ast, visitor
+
     `caller_name` is the nearest enclosing `FunctionDef`/`AsyncFunctionDef`
     name, or `"<module>"` for a call made at module scope (matching the
     contract's `caller_name` rule). `caller_lineno` is that enclosing def's
@@ -217,9 +262,11 @@ class _CallCollector(ast.NodeVisitor):
         return self._stack[-1] if self._stack else ("<module>", None)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        """Record this def as the enclosing caller, then visit its body."""
         self._visit_def(node)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        """Same as visit_FunctionDef, for async defs."""
         self._visit_def(node)
 
     def _visit_def(self, node) -> None:
@@ -228,6 +275,7 @@ class _CallCollector(ast.NodeVisitor):
         self._stack.pop()
 
     def visit_Call(self, node: ast.Call) -> None:
+        """Record a Name/Attribute call site with its enclosing caller and callee position."""
         callee = node.func
         if isinstance(callee, ast.Name):
             name, line, col = callee.id, callee.lineno, callee.col_offset

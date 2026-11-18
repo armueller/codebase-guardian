@@ -48,9 +48,11 @@ src/
 ├── mcp-server/             # MCP server (ESM, runs via node)
 │   ├── index.ts            # Tool handlers + server setup
 │   ├── db.ts               # SQLite schema + CRUD (better-sqlite3)
+│   ├── rebuild.ts           # The full rebuild as isolated phases (used by rebuild_index and the CLI); per-phase status + report
+│   ├── file-walk.ts         # The one file list both rebuild phases read; applies excludeDirectories
 │   ├── indexer.ts           # Phase 1: JSDoc & doc parsing + Python module/unit indexing
 │   ├── ts-bodies.ts         # TypeScript-parser body ranges (inline comments + body embeddings); text brace scan is only the fallback
-│   ├── call-graph.ts        # Phase 2: TS call graph + export discovery (ts-morph)
+│   ├── call-graph.ts        # TypeScript call graph + Tier 2 export discovery (ts-morph), built from the resolved tsconfig
 │   ├── py-index.ts          # Python extraction bridge: guardian_py `extract` → raw JSON for the indexer
 │   ├── py-call-graph.ts     # Python call graph: guardian_py `callgraph` (Jedi) → call_edges rows
 │   ├── embeddings.ts        # HuggingFace vector embeddings (local, no API)
@@ -72,7 +74,9 @@ src/
 │       ├── code-index-client.ts # Direct SQLite queries (readonly); buildPatternContext is language-scoped
 │       ├── validation-cache.ts  # 5-minute TTL result cache
 │       └── validation-sessions.ts # Session store for --resume support
-├── config.ts               # Config resolution (git root, paths, auto-detection, getGuardianHome/pyenv)
+├── config.ts               # Config resolution (git root, paths, auto-detection, getGuardianHome/pyenv); resolveConfig (cached) + reloadConfig (fresh)
+├── tsconfig-resolution.ts  # Which tsconfig applies + source-directory detection. Dependency-free on purpose (no TypeScript compiler)
+├── config-validation.ts    # Field-by-field validation of guardian.config.json values (never throws)
 python/
 └── guardian_py/             # Python extraction helper (stdlib `ast`), run from the guardian's managed pyenv venv
     ├── extract.py            # `python -m guardian_py extract <file>` — module/class/function/method JSON
@@ -149,6 +153,25 @@ Tier detection (TS): presence of `@domain` in JSDoc block → Tier 1. Otherwise 
 Tier detection (Python): the module row is Tier 1 if its docstring has a `Domain:` line, else Tier 3. Every function/method/class/dataclass unit row is Tier 1 if it has its own `Domain:` line, else Tier 2.
 
 **Python index coverage.** `functions.language` (`'ts' | 'py'`) tags every row. Python module/class/function/method definitions are indexed by `indexPythonFile` (`indexer.ts`, via `py-index.ts`'s `extractPythonFile`) into the *same* `functions` / `function_domains` / `function_tags` / `function_systemlayers` / `function_embeddings` tables TypeScript uses — no parallel schema. A unit without its own `Domain:` line inherits the module's domains for search/embeddings (denormalization) while keeping its own tier. Cross-file Python call edges come from `py-call-graph.ts`'s `buildPythonCallGraph` (Jedi, via `guardian_py callgraph`) into the same `call_edges` table, resolved by `(file, def-line)` first — required because Python method names collide across classes in one file — falling back to name lookup. `Domain:`/`Tags:`/`Layer:` docstring lines are parsed by `guardian_py/metadata.py` and normalized exactly like JSDoc's `@domain`/`@tags`/`@systemlayer` (domains/tags lowercased, layer preserved case) into the identical columns, so hybrid search, callers/callees, and impact analysis work the same way across both languages.
+
+### Index Rebuild Pipeline (`rebuild.ts`)
+
+One module runs the whole rebuild for both the `rebuild_index` MCP tool and the `build-index` CLI. Do not add a second copy of the sequence to either caller. The rules it encodes:
+
+- **Preflight: a rebuild never starts from a configuration it knows is broken.** Definite config errors (`configProblems` in `config.ts`: an unusable `guardian.config.json`, a wrong-shaped field, an invalid tsconfig; plus a tsconfig that cannot be loaded) stop the rebuild before anything is cleared. The result reads "Index Rebuild Not Started" and the existing index is untouched. Things that are not definitely errors (a configured directory that does not exist, Python that could not be extracted) still run and are reported as `degraded`.
+- **A configured tsconfig never falls back.** `"tsconfig"` in `guardian.config.json` must be a file inside the project root. A wrong value is `invalid` with a reason; the root `tsconfig.json` is used only when the field is not set. One tsconfig per project.
+- **Phases are isolated.** Clear → index → TypeScript call graph → Python call graph → validation cache. Each ends `ok`, `degraded`, `failed` or `skipped`. The only dependency: both call graphs are skipped when clearing or indexing failed. The validation cache is always cleared. Never report "Complete" when part of the rebuild did not run: add the case to `indexLimitations` (index phase) or `tsconfigLimitations` (call graph) instead of logging it to stderr.
+- **The outcome is stored.** `saveRebuildStatus` writes the per-phase result to the metadata table and `index_status` shows it (`readLastRebuildStatus`).
+- **One file list.** `file-walk.ts` (`listIndexFiles`) is the only answer to "which files are in the index". A rebuild computes it once and passes it to the indexer and the TypeScript call graph. The incremental path uses `classifyIndexFile`, which gives each file the verdict a full walk would. Do not enumerate files anywhere else.
+- **Excludes are additive and shared.** `excludeDirectories` adds to `DEFAULT_EXCLUDE` (`config.ts`); the defaults cannot be removed. A bare name matches at any depth, an entry with a slash matches that one path from the root, patterns are a config error. The Python call graph receives the same list from Node (`callgraphArgs`); `EXCLUDED_DIRS` in `python/guardian_py/callgraph.py` is only the fallback for running the CLI by hand and must stay equal to `DEFAULT_EXCLUDE`.
+
+### Config Freshness: `resolveConfig` vs `reloadConfig`
+
+`resolveConfig()` caches per project root for the life of the process. That is right for the hooks (short-lived, and they call it from many module-level initializers) and wrong for the MCP server, which outlives edits to `guardian.config.json`. The server takes only the project root and the paths derived from it from its startup config; every handler that reads settings (`rebuild_index`, `index_status`, auto-sync) calls `reloadConfig(REPO_ROOT)`. New long-lived code must do the same.
+
+`reloadConfig` never throws on bad input: a wrong value falls back to its default and is recorded in `configWarnings` (or `configFileError`, or `tsconfig.kind === 'invalid'`). The hook depends on that, since it builds its config through the same function and must stay fail-open.
+
+`config.ts`, `tsconfig-resolution.ts`, `config-validation.ts` and `shared/util.ts` must stay free of heavy imports (no ts-morph, no better-sqlite3): the search-hint hook resolves config on every grep.
 
 ### Normalization Rules
 

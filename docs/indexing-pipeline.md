@@ -1,27 +1,24 @@
 # Indexing Pipeline
 
-The indexing pipeline scans the the codebase and documentation, extracts structured metadata, and stores it in the SQLite database. It runs in two phases: code scanning (Phase 1) and call graph extraction (Phase 2).
+The indexing pipeline scans the the codebase and documentation, extracts structured metadata, and stores it in the SQLite database. A rebuild is run by `src/mcp-server/rebuild.ts`, for both the `rebuild_index` MCP tool and the CLI. It first checks the configuration (a definite error stops the rebuild before anything is cleared), then runs five phases, each reporting its own status: clear the old index, code and doc scanning (Phase 1 below), the TypeScript call graph (Phase 2), the Python call graph, and clearing the validation cache. The files both scanning phases read come from one list, built once per rebuild by `src/mcp-server/file-walk.ts`.
 
 ## Running a Build
 
 ```bash
-# Full rebuild with embeddings (~16s)
+# Full rebuild (always with embeddings)
 npx tsx src/mcp-server/build-index.ts
-
-# Fast rebuild without embeddings (~7s)
-npx tsx src/mcp-server/build-index.ts --skip-embeddings
 
 # Set custom repo root
 GUARDIAN_PROJECT_ROOT=/path/to/repo npx tsx src/mcp-server/build-index.ts
 ```
 
-The build script (`build-index.ts`) resolves the repo root from `GUARDIAN_PROJECT_ROOT` env var or by walking up from `__dirname`. The database is created at `{REPO_ROOT}/code-quality.db`.
+The build script (`build-index.ts`) takes the project root from the `GUARDIAN_PROJECT_ROOT` env var, else the git root of the current directory. The database lives outside the repo, at `{GUARDIAN_HOME}/indexes/{project-hash}/code-quality.db`. The script exits non-zero when the rebuild did not start or a phase failed.
 
 ## Phase 1: Code Scanning
 
 ### Tier 1 — JSDoc-Annotated Functions
 
-**Source:** All `.ts` and `.tsx` files under `app/` (excluding `node_modules`, `dist`, `.claude`, `cdk.out`, `build`, `__snapshots__`)
+**Source:** Files with a configured extension (`fileExtensions`) under the configured `sourceDirectories`, taken from the shared file list. Test files are left out, and folders on the exclude list (the built-in defaults plus the project's `excludeDirectories`) are never entered.
 
 **Detection:** Regex matches JSDoc blocks containing `@domain`:
 
@@ -46,9 +43,9 @@ The build script (`build-index.ts`) resolves the repo root from `GUARDIAN_PROJEC
 
 ### Tier 3 — Documentation Files
 
-**Source:** All `.md` files under `docs/` subdirectories (`architecture/`, `best-practices/`, `patterns/`)
+**Source:** All `.md` files under the configured `docsDirectories`, plus every `README.md` under the source directories, taken from the shared file list
 
-**Detection:** Files ending in `.md` found by `findReadmeFiles()`
+**Detection:** The doc files in the shared file list (`listIndexFiles()` in `file-walk.ts`)
 
 **Extraction per document:**
 
@@ -107,7 +104,7 @@ Splits Tier 3 documentation into heading-level sections for granular FTS5 search
 
 Uses `ts-morph` to load the TypeScript project and discover all exported symbols not already captured as Tier 1:
 
-1. Load `tsconfig.json` and add all `app/**/*.ts(x)` files
+1. Load the resolved tsconfig (the `tsconfig` path from `guardian.config.json`, else `<root>/tsconfig.json`, else compiler defaults) and add the `.ts`/`.tsx` files the indexer walked — the same file list, with `excludeDirectories` applied
 2. For each source file, find exported declarations:
    - Functions (`export function`)
    - Variables (`export const`)
@@ -165,28 +162,31 @@ The MCP server maintains a `.dirty-files` file listing files modified since the 
 A typical full rebuild produces:
 
 ```
-=== Codebase Guardian Index Builder ===
+=== Codebase Guardian Index Builder ({PROJECT_NAME}) ===
 Repository: {PROJECT_ROOT}
-Database: {PROJECT_ROOT}/code-quality.db
+Database: {GUARDIAN_HOME}/indexes/{project-hash}/code-quality.db
 
-Phase 1: Scanning code and documentation...
-  Files scanned: 417
-  Tier 1 (JSDoc): 394
-  Tier 3 (docs): 31
-  Inline comments: 1047
-  Doc sections: 346
-  Embeddings: 425
-  Time: 7.1s
+## Index Rebuild Complete
 
-Phase 2: Building call graph...
-  Loaded 445 source files
-  Found 548 exported functions
-  Found 3654 raw call edges
-  Inserted 893 call edges
-  Tier 2 (exports): 356
-  Call edges: 893
-  Time: 9.1s
+- **Clear old index:** ok
+- **Index code and docs:** ok
+- **TypeScript call graph:** ok
+- **Python call graph:** ok (no Python files indexed)
+- **Validation cache:** ok
 
-=== Build complete in 16.2s ===
-Total indexed: 781 entries
+**Files scanned:** 41
+**Files skipped (unchanged):** 0
+**Tier 1 (JSDoc):** 126
+**Tier 2 (exports):** 21
+**Tier 3 (docs):** 3
+**Embeddings generated:** 129
+**Call edges:** 108
+**Python call edges:** 0
+**Inline comments:** 19
+**Doc sections:** 50
+**Validation cache:** already clear
+
+=== Finished in 2.2s ===
 ```
+
+The `rebuild_index` MCP tool returns the same report (from the heading down). The phases are run by `src/mcp-server/rebuild.ts`. Each one ends `ok`, `degraded`, `failed` or `skipped`, with the reason in brackets; a failed phase does not stop the ones after it, and the heading reads "Index Rebuild Finished With Problems" unless every phase is `ok`. The CLI exits non-zero when any phase failed. See "Reading the Rebuild Result" in the README.

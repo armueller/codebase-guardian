@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "_comment": "Optional per-project config. Place at project root as guardian.config.json. All fields are optional — auto-detection is used for anything not specified.",
+  "_comment": "Optional per-project config. Place at project root as guardian.config.json. All fields are optional — auto-detection is used for anything not specified. Not shown below: \"tsconfig\" (e.g. \"web/tsconfig.json\") — path to your tsconfig relative to the project root; set it only when there is no tsconfig.json at the root. excludeDirectories adds to the built-in list (node_modules, dist, .claude, cdk.out, build, __snapshots__, .next, .turbo, coverage, .venv, __pycache__, .pytest_cache, site-packages, .mypy_cache, .ruff_cache), which always applies, so list only project-specific folders: a bare name matches at any depth, an entry with a slash matches that one path from the project root; patterns with * are not supported. A wrong value anywhere in this file stops rebuild_index before it changes anything, and the result lists what to fix.",
   "sourceDirectories": ["src"],
   "docsDirectories": ["docs"],
-  "excludeDirectories": ["node_modules", "dist", "build", ".next", ".turbo", "coverage", ".venv", "__pycache__", ".pytest_cache", "site-packages", ".mypy_cache", ".ruff_cache"],
+  "excludeDirectories": [],
   "fileExtensions": [".ts", ".tsx", ".py"],
   "jsdoc": {
     "requiredTags": ["what", "how", "why", "sideeffects", "systemlayer", "domain", "tags"],

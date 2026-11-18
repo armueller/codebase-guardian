@@ -11,13 +11,15 @@ All live in `src/mcp-server/`:
 | Module | File | Responsibility |
 |--------|------|---------------|
 | **Database** | `db.ts` | Schema definition, CRUD operations, FTS5 search, type definitions (`functions.language` tags TS/Python rows) |
+| **Rebuild Pipeline** | `rebuild.ts` | The full rebuild as isolated phases: configuration preflight, per-phase status, stored status for `index_status`, the rebuild report. Called by the MCP tool and the CLI |
+| **File List** | `file-walk.ts` | The one list of files a rebuild reads, with `excludeDirectories` applied; also the per-file verdict used by incremental sync |
 | **Indexer** | `indexer.ts` | JSDoc parsing, comment extraction, doc section parsing, file scanning; dispatches `.py` files to the Python indexing branch |
 | **Call Graph** | `call-graph.ts` | TypeScript AST analysis via ts-morph, export discovery, call edge extraction |
 | **Python Index Bridge** | `py-index.ts` | Runs `guardian_py extract` for an on-disk `.py` file, returns raw module+unit JSON for the indexer |
 | **Python Call Graph** | `py-call-graph.ts` | Runs `guardian_py callgraph` (Jedi), resolves edges by `(file, def-line)` into `call_edges` |
 | **Embeddings** | `embeddings.ts` | HuggingFace `all-MiniLM-L6-v2` local inference, vector storage, cosine similarity |
 | **MCP Server** | `index.ts` | MCP protocol implementation, tool handlers, hybrid search orchestration |
-| **Build CLI** | `build-index.ts` | Command-line entry point for full/incremental rebuilds |
+| **Build CLI** | `build-index.ts` | Command-line entry point for a full rebuild (runs the rebuild pipeline, prints its report) |
 
 ### Hook Integration (Validation System)
 
@@ -46,23 +48,29 @@ Lives in `src/hooks/`:
 ### 1. Index Build (Offline)
 
 ```
-Source Files (app/**/*.ts, app/**/*.tsx)
+Source Files (configured sourceDirectories × fileExtensions, minus excluded folders)
+    │
+    ▼
+Preflight (rebuild.ts)
+    ├── Re-read guardian.config.json and resolve the tsconfig
+    ├── A definite configuration error stops here: nothing is cleared
+    └── List the files once (file-walk.ts); every phase below reads that list
     │
     ▼
 Phase 1: Code Scanning (indexer.ts)
-    ├── Scan all .ts/.tsx files in app/
+    ├── Read the code files in the shared list
     ├── Match JSDoc blocks containing @domain (Tier 1)
     ├── Parse @what, @how, @why, @param, @returns, @sideeffects, @domain, @tags, @systemlayer
     ├── Extract function name + body from code following JSDoc
     ├── Extract inline comments from function bodies
-    ├── Scan docs/ for .md files (Tier 3)
+    ├── Read the doc files in the shared list (Tier 3)
     ├── Parse doc sections at heading boundaries
     ├── Generate vector embeddings (HuggingFace local)
     └── Store everything in code-quality.db
     │
     ▼
 Phase 2: Call Graph (call-graph.ts)
-    ├── Load TypeScript project via ts-morph
+    ├── Load the indexed .ts/.tsx files into ts-morph with the resolved tsconfig (compiler defaults if none)
     ├── Discover all exported functions/variables/classes (Tier 2)
     ├── Walk AST to find function call expressions
     ├── Resolve callee to source file using TypeScript's type checker
@@ -266,7 +274,7 @@ codebase-guardian/
 │   ├── run-hook.sh / run-mcp.sh      # Thin wrappers the plugin invokes (resolve node, exec the built dist/)
 │   └── copy-assets.mjs               # Copies .cjs boundary files into dist/ after tsc
 ├── src/                              # TypeScript source — see CLAUDE.md's "Project Structure" for the full tree
-│   ├── mcp-server/                   # MCP server (index.ts, db.ts, indexer.ts, call-graph.ts, py-index.ts, py-call-graph.ts, embeddings.ts, build-index.ts)
+│   ├── mcp-server/                   # MCP server (index.ts, db.ts, rebuild.ts, file-walk.ts, indexer.ts, call-graph.ts, py-index.ts, py-call-graph.ts, embeddings.ts, build-index.ts)
 │   └── hooks/                        # PreToolUse hook (pre-edit-validation.ts + helpers/, including the py-*.ts Python path)
 ├── python/guardian_py/               # Python extraction helper (ast-based), bundled alongside the compiled TS
 ├── requirements-python.txt           # Pinned Python toolchain versions (ruff, pydoclint, pyright, griffe, jedi)

@@ -366,8 +366,9 @@ Create `guardian.config.json` at your project root to override auto-detection:
 {
   "sourceDirectories": ["src", "lib"],
   "docsDirectories": ["docs"],
-  "excludeDirectories": ["node_modules", "dist", "build", ".next", "coverage"],
+  "excludeDirectories": ["web/data", "generated"],
   "fileExtensions": [".ts", ".tsx", ".py"],
+  "tsconfig": "web/tsconfig.json",
   "jsdoc": {
     "requiredTags": ["what", "how", "why", "sideeffects", "systemlayer", "domain", "tags"],
     "minTags": 3,
@@ -376,14 +377,58 @@ Create `guardian.config.json` at your project root to override auto-detection:
 }
 ```
 
-All fields are optional. Without a config file, Guardian auto-detects:
+All fields are optional. The config is re-read on every `rebuild_index`, so changes take effect without restarting anything.
 
-- **Source directories** from `tsconfig.json` `include` patterns, falling back to `src/`, `app/`, `lib/`
+**`tsconfig`** — path to your tsconfig, relative to the project root. Set it when the TypeScript app lives in a sub-folder and there is no `tsconfig.json` at the root. One tsconfig per project is supported.
+
+| Situation | What the TypeScript call graph does |
+|---|---|
+| `tsconfig` set to a file inside the project | Uses it |
+| `tsconfig` not set, `<root>/tsconfig.json` exists | Uses the root one |
+| No tsconfig at all | Builds with compiler defaults and reports `degraded`: calls through path aliases (`~/…`, `@/…`) cannot be resolved, so those call edges are missing from `callers`/`callees`/`impact` |
+| The tsconfig loads with errors (for example it `extends` a file that is missing) | Builds, and reports `degraded` with the error |
+| The tsconfig is solution-style (`references`, and no `paths` of its own) | Builds, and reports `degraded`: point `tsconfig` at the referenced file that holds the settings, such as `tsconfig.app.json` |
+| `tsconfig` is set but wrong (missing, a folder, outside the project, not a string, or it cannot be parsed) | The rebuild does not start. Guardian never falls back to a different file |
+
+**`excludeDirectories`** — extra folders to leave out of the index. They apply to the indexer and to both call graphs. Your entries are **added to** the default list, which always applies: `node_modules`, `dist`, `.claude`, `cdk.out`, `build`, `__snapshots__`, `.next`, `.turbo`, `coverage`, `.venv`, `__pycache__`, `.pytest_cache`, `site-packages`, `.mypy_cache`, `.ruff_cache`. You only list what is specific to your project, and a default cannot be removed.
+
+- An entry with no slash (`generated`) matches a folder of that name at any depth.
+- An entry with a slash (`web/data`, or `./data` for a top-level folder only) matches that one path, relative to the project root.
+- Patterns are not supported: an entry containing `*` or `?` is a configuration error.
+- A folder you name in `sourceDirectories` is always walked, even if its own name is on the list.
+- Other dot-folders are not excluded by default. If a generated folder such as `.svelte-kit`, `.nuxt` or `.react-router` sits under a source directory, add it here.
+
+> **Upgrading from 0.8.2 or earlier:** `excludeDirectories` used to be read and ignored. From 0.8.3 your entries are honoured, on top of the defaults that already applied, so an upgrade can only skip more folders, never fewer.
+
+**Configuration errors stop the rebuild.** `rebuild_index` checks the configuration before it clears anything. If `guardian.config.json` is not valid JSON, a field has the wrong shape (a list field that is not a list of strings, a `fileExtensions` entry without its dot, a `jsdoc` or `searchHint` setting of the wrong type), or `tsconfig` is wrong, the result reads **Index Rebuild Not Started**, lists each problem, and the existing index is left as it was. The edit hook is not affected: it keeps working, using the default for any setting it could not read.
+
+Without a config file, Guardian auto-detects:
+
+- **Source directories** from the folders named in the tsconfig's `include` patterns (relative to the tsconfig's folder; entries that are files, such as `vite.config.ts`, are ignored), falling back to `src/`, `app/`, `lib/`, `packages/` in that folder
 - **Docs directories** by checking for `docs/`, `doc/`, `documentation/`
 - **Project root** via `git rev-parse --show-toplevel`
 - **Project name** from `package.json`
 
-> **Mixed TypeScript + Python repos:** source-directory auto-detection is driven by `tsconfig.json`, so Python packages living **outside** the TypeScript roots (e.g. an `ml/` directory) are not scanned automatically. Add them explicitly: `"sourceDirectories": ["app", "ml"]`. `.py` is enabled by default in `fileExtensions`; `.venv/`, `__pycache__/`, and Python test files are excluded/skipped for you.
+> **Mixed TypeScript + Python repos:** source-directory auto-detection is driven by the tsconfig, so Python packages living **outside** the TypeScript roots (e.g. an `ml/` directory) are not scanned automatically. Add them explicitly: `"sourceDirectories": ["app", "ml"]`. When a rebuild indexes no Python at all but finds Python files elsewhere in the project, it says so and reports indexing as `degraded`. `.py` is enabled by default in `fileExtensions`. Python test files are always skipped. `.venv/`, `__pycache__/` and `site-packages/` are on the default `excludeDirectories` list, so they are always skipped.
+
+### Reading the Rebuild Result
+
+`rebuild_index` (and `npm run build-index`) first checks the configuration, then runs five phases and reports each one: clear the old index, index code and docs, TypeScript call graph, Python call graph, validation cache. One phase failing does not stop the others.
+
+| Status | Meaning |
+|---|---|
+| `ok` | Ran and did everything |
+| `degraded` | Ran, with every limitation stated next to it. For indexing: a configured source or docs directory does not exist or cannot be read, a folder could not be read, no code files were found, Python files could not be indexed (for example the Python interpreter is missing), or the project's Python sits outside the source directories. For the TypeScript call graph: no tsconfig, one that loaded with errors, or a solution-style one. For the Python call graph: it could not run although the project has Python |
+| `failed` | Did not complete; the reason is stated. Counts that phase would have produced read `not run` |
+| `skipped` | Not run because clearing or indexing failed, and the call graphs depend on it |
+
+The heading tells you which of three things happened:
+
+- **Index Rebuild Complete** — every phase is `ok`.
+- **Index Rebuild Finished With Problems** — the index was rebuilt, and at least one phase is `degraded`, `failed` or `skipped`.
+- **Index Rebuild Not Started** — the configuration has errors; nothing was changed.
+
+The tool call is an error when the rebuild did not start or when clearing or indexing itself failed. The CLI exits non-zero when the rebuild did not start or any phase failed. `index_status` repeats the per-phase outcome of the last rebuild that ran, so a degraded index stays visible afterwards.
 
 ### PR Audit Setup
 

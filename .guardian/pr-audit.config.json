@@ -5,7 +5,9 @@
     "lint": null,
     "test": "npm test"
   },
-  "docDirs": ["docs"],
+  "docDirs": [
+    "docs"
+  ],
   "staffReview": {
     "minDiffLinesForFullPass": 100
   },
@@ -25,7 +27,7 @@
     "repo": "armueller/codebase-guardian"
   },
   "plan": {
-    "vaultDir": "~/Dropbox/Obsidian/Project Plans/codebase-guardian"
+    "vaultDir": "docs/plans"
   },
   "checklistsFile": ".guardian/pr-audit.checklists.md"
 }

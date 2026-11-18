@@ -132,13 +132,11 @@ No parameters.
 
 ### `rebuild_index`
 
-Full or incremental rebuild of the code index.
+Full rebuild of the code index, always with embeddings.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `skip_embeddings` | boolean | No | Skip HuggingFace embedding generation (default false) |
+No parameters.
 
-**Output:** Build statistics including counts for each tier, comments, doc sections, embeddings, and call edges.
+**Output:** One status line per phase (`ok`, `degraded`, `failed` or `skipped`, with the reason), then build statistics including counts for each tier, comments, doc sections, embeddings, and call edges. A count reads `not run` when its phase did not complete. The project config is re-read from disk on every call. If it has errors, the result is "Index Rebuild Not Started": nothing is cleared, and the problems are listed.
 
 **When to use:** After significant codebase changes, or when search results seem stale. Note: this clears all existing data before rebuilding.
 
@@ -148,7 +146,7 @@ Get current index health metrics.
 
 No parameters.
 
-**Output:** Counts by tier, domain/tag/systemlayer counts, embedding count, call edge count, comment count, doc section count, last rebuild time, and number of stale files.
+**Output:** Counts by tier, domain/tag/systemlayer counts, embedding count, call edge count, comment count, doc section count, last rebuild time, the per-phase outcome of the last rebuild that ran, and number of stale files.
 
 **When to use:** Checking if the index is up to date before relying on search results.
 
